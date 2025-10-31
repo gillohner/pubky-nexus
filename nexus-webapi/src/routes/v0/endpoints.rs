@@ -69,3 +69,22 @@ pub const NOTIFICATION_ROUTE: &str = concatcp!(USER_ROUTE, "/notifications");
 // -- BOOTSTRAP endpoints -
 pub const BOOTSTRAP_ROUTE: &str = concatcp!(VERSION_ROUTE, "/bootstrap/{user_id}");
 pub const PUT_HOMESERVER_ROUTE: &str = concatcp!(VERSION_ROUTE, "/ingest/{user_id}");
+
+// -- CALENDAR endpoints --
+const CALENDAR_PREFIX: &str = concatcp!(VERSION_ROUTE, "/calendar");
+pub const CALENDAR_ROUTE: &str = concatcp!(CALENDAR_PREFIX, "/{author_id}/{calendar_id}");
+pub const STREAM_CALENDARS_ROUTE: &str = concatcp!(STREAM_PREFIX, "/calendars");
+
+// -- EVENT endpoints --
+const EVENT_PREFIX: &str = concatcp!(VERSION_ROUTE, "/event");
+pub const EVENT_ROUTE: &str = concatcp!(EVENT_PREFIX, "/{author_id}/{event_id}");
+pub const STREAM_EVENTS_ROUTE: &str = concatcp!(STREAM_PREFIX, "/events");
+
+// -- ATTENDEE endpoints --
+const ATTENDEE_PREFIX: &str = concatcp!(VERSION_ROUTE, "/attendee");
+pub const ATTENDEE_ROUTE: &str = concatcp!(ATTENDEE_PREFIX, "/{author_id}/{attendee_id}");
+
+// -- ALARM endpoints --
+const ALARM_PREFIX: &str = concatcp!(VERSION_ROUTE, "/alarm");
+pub const ALARM_ROUTE: &str = concatcp!(ALARM_PREFIX, "/{author_id}/{alarm_id}");
+

@@ -1,8 +1,12 @@
 use axum::Router;
 use utoipa::OpenApi;
 
+pub mod alarm;
+pub mod attendee;
 pub mod bootstrap;
+pub mod calendar;
 pub mod endpoints;
+pub mod event;
 pub mod file;
 pub mod info;
 pub mod notification;
@@ -28,6 +32,10 @@ pub fn routes(app_state: AppState) -> Router<AppState> {
     let route_tag = tag::routes();
     let route_notification = notification::routes();
     let route_bootstrap = bootstrap::routes();
+    let route_calendar = calendar::routes();
+    let route_event = event::routes();
+    let route_attendee = attendee::routes();
+    let route_alarm = alarm::routes();
 
     routes_post
         .merge(routes_info)
@@ -38,6 +46,10 @@ pub fn routes(app_state: AppState) -> Router<AppState> {
         .merge(route_tag)
         .merge(route_notification)
         .merge(route_bootstrap)
+        .merge(route_calendar)
+        .merge(route_event)
+        .merge(route_attendee)
+        .merge(route_alarm)
 }
 
 #[derive(OpenApi)]
@@ -56,6 +68,10 @@ impl ApiDoc {
         combined.merge(file::FileApiDoc::merge_docs());
         combined.merge(tag::TagApiDoc::merge_docs());
         combined.merge(notification::NotificationApiDoc::merge_docs());
+        combined.merge(calendar::CalendarApiDoc::merge_docs());
+        combined.merge(event::EventApiDoc::merge_docs());
+        combined.merge(attendee::AttendeeApiDoc::merge_docs());
+        combined.merge(alarm::AlarmApiDoc::merge_docs());
         combined
     }
 }

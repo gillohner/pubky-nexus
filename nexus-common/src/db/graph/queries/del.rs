@@ -106,3 +106,42 @@ pub fn delete_file(owner_id: &str, file_id: &str) -> Query {
     .param("id", file_id.to_string())
     .param("owner_id", owner_id.to_string())
 }
+
+// Calendar deletion functions
+
+pub fn delete_calendar(author_id: &str, calendar_id: &str) -> Query {
+    query(
+        "MATCH (u:User {id: $author_id})-[:AUTHORED]->(c:Calendar {id: $calendar_id})
+         DETACH DELETE c;",
+    )
+    .param("author_id", author_id)
+    .param("calendar_id", calendar_id)
+}
+
+pub fn delete_event(author_id: &str, event_id: &str) -> Query {
+    query(
+        "MATCH (u:User {id: $author_id})-[:AUTHORED]->(e:Event {id: $event_id})
+         DETACH DELETE e;",
+    )
+    .param("author_id", author_id)
+    .param("event_id", event_id)
+}
+
+pub fn delete_attendee(author_id: &str, attendee_id: &str) -> Query {
+    query(
+        "MATCH (u:User {id: $author_id})-[:AUTHORED]->(a:Attendee {id: $attendee_id})
+         DETACH DELETE a;",
+    )
+    .param("author_id", author_id)
+    .param("attendee_id", attendee_id)
+}
+
+pub fn delete_alarm(author_id: &str, alarm_id: &str) -> Query {
+    query(
+        "MATCH (u:User {id: $author_id})-[:AUTHORED]->(a:Alarm {id: $alarm_id})
+         DETACH DELETE a;",
+    )
+    .param("author_id", author_id)
+    .param("alarm_id", alarm_id)
+}
+

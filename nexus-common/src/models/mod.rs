@@ -1,4 +1,8 @@
+pub mod alarm;
+pub mod attendee;
 pub mod bootstrap;
+pub mod calendar;
+pub mod event;
 pub mod file;
 pub mod follow;
 pub mod homeserver;
