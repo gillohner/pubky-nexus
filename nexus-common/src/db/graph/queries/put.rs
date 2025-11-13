@@ -489,8 +489,7 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
              e.exdate = $exdate,
              e.description = $description,
              e.status = $status,
-             e.location = $location,
-             e.geo = $geo,
+             e.locations = $locations,
              e.url = $url,
              e.sequence = $sequence,
              e.last_modified = $last_modified,
@@ -541,8 +540,7 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
     .param("exdate", exdate)
     .param("description", event.description.clone())
     .param("status", event.status.clone())
-    .param("location", event.location.clone())
-    .param("geo", event.geo.clone())
+    .param("locations", event.locations.clone())
     .param("url", event.url.clone())
     .param("sequence", event.sequence)
     .param("last_modified", event.last_modified)

@@ -34,8 +34,6 @@ pub struct EventDetails {
     pub exdate: Option<Vec<String>>,
     pub description: Option<String>,
     pub status: Option<String>,
-    pub location: Option<String>,
-    pub geo: Option<String>,
     pub url: Option<String>,
     pub sequence: Option<i32>,
     pub last_modified: Option<i64>,
@@ -44,6 +42,11 @@ pub struct EventDetails {
     // RFC 7986 fields
     pub image_uri: Option<String>,
     pub styled_description: Option<String>,   // Serialized JSON
+    // RFC 9073 Structured Locations (serialized JSON array)
+    /// Structured locations for this event (RFC 9073 VLOCATION)
+    /// Contains serialized JSON array of Location objects
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locations: Option<String>,
     // Pubky extensions
     pub x_pubky_calendar_uris: Option<Vec<String>>,
     pub x_pubky_rsvp_access: Option<String>,
@@ -142,6 +145,12 @@ impl EventDetails {
             .as_ref()
             .and_then(|sd| serde_json::to_string(sd).ok());
 
+        // Serialize locations to JSON string for storage
+        let locations = homeserver_event
+            .locations
+            .as_ref()
+            .and_then(|locs| serde_json::to_string(locs).ok());
+
         // Parse dtstart to timestamp for efficient filtering/sorting
         let dtstart_timestamp = Self::parse_dtstart_to_timestamp(
             &homeserver_event.dtstart,
@@ -169,8 +178,6 @@ impl EventDetails {
             exdate: homeserver_event.exdate,
             description: homeserver_event.description,
             status: homeserver_event.status,
-            location: homeserver_event.location,
-            geo: homeserver_event.geo,
             url: homeserver_event.url,
             sequence: homeserver_event.sequence,
             last_modified: homeserver_event.last_modified,
@@ -179,6 +186,8 @@ impl EventDetails {
             // RFC 7986
             image_uri: homeserver_event.image_uri,
             styled_description,
+            // RFC 9073 Structured Locations
+            locations,
             // Pubky extensions
             x_pubky_calendar_uris: homeserver_event.x_pubky_calendar_uris,
             x_pubky_rsvp_access: homeserver_event.x_pubky_rsvp_access,
