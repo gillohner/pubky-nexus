@@ -8,7 +8,7 @@ use pubky_app_specs::{event_uri_builder, PubkyAppEvent, PubkyId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Represents event data with full RFC 5545/7986/9073 fields
+/// Represents event data with simplified RFC 5545/7986/9073 fields
 #[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
 pub struct EventDetails {
     pub id: String,
@@ -17,12 +17,14 @@ pub struct EventDetails {
     pub uri: String,
     // Required RFC 5545 fields
     pub uid: String,
-    pub dtstamp: String,
+    pub dtstamp: i64,
     pub dtstart: String,
     pub summary: String,
     // Optional RFC 5545 fields
     pub dtend: Option<String>,
     pub duration: Option<String>,
+    pub dtstart_tzid: Option<String>,
+    pub dtend_tzid: Option<String>,
     pub rrule: Option<String>,
     pub rdate: Option<Vec<String>>,
     pub exdate: Option<Vec<String>>,
@@ -30,34 +32,16 @@ pub struct EventDetails {
     pub status: Option<String>,
     pub location: Option<String>,
     pub geo: Option<String>,
-    pub organizer: Option<String>, // Serialized JSON
     pub url: Option<String>,
-    pub categories: Option<Vec<String>>,
-    pub class: Option<String>,
-    pub priority: Option<i32>,
     pub sequence: Option<i32>,
-    pub transp: Option<String>,
-    pub attach: Option<Vec<String>>,
-    pub attendee: Option<Vec<String>>,
-    pub comment: Option<Vec<String>>,
-    pub contact: Option<Vec<String>>,
-    pub related_to: Option<Vec<String>>,
-    pub request_status: Option<Vec<String>>,
-    pub resources: Option<Vec<String>>,
+    pub last_modified: Option<i64>,
+    pub created: Option<i64>,
+    pub recurrence_id: Option<i64>,
     // RFC 7986 fields
-    pub color: Option<String>,
-    pub conference: Option<Vec<String>>, // Serialized JSON array
-    pub image: Option<Vec<String>>,
-    pub structured_locations: Option<String>, // Serialized JSON array
+    pub image_uri: Option<String>,
     pub styled_description: Option<String>,   // Serialized JSON
-    // RFC 9073 fields
-    pub participant_type: Option<Vec<String>>,
-    pub resource_type: Option<Vec<String>>,
-    pub structured_data: Option<String>,
-    pub styled_description_param: Option<String>,
     // Pubky extensions
-    pub x_pubky_recurrence_id: Option<String>,
-    pub x_pubky_calendar_uri: Option<String>, // Reference to containing calendar
+    pub x_pubky_calendar_uris: Option<Vec<String>>,
     pub x_pubky_rsvp_access: Option<String>,
 }
 
@@ -122,20 +106,7 @@ impl EventDetails {
         author_id: &PubkyId,
         event_id: &String,
     ) -> Result<Self, DynError> {
-        // Serialize complex types to JSON strings for storage
-        let organizer = homeserver_event
-            .organizer
-            .as_ref()
-            .and_then(|o| serde_json::to_string(o).ok());
-        let conference = homeserver_event
-            .conference
-            .as_ref()
-            .and_then(|c| serde_json::to_string(c).ok())
-            .map(|json| vec![json]);
-        let structured_locations = homeserver_event
-            .structured_locations
-            .as_ref()
-            .and_then(|sl| serde_json::to_string(sl).ok());
+        // Serialize styled_description to JSON string for storage
         let styled_description = homeserver_event
             .styled_description
             .as_ref()
@@ -148,12 +119,14 @@ impl EventDetails {
             author: author_id.to_string(),
             // Required fields
             uid: homeserver_event.uid,
-            dtstamp: homeserver_event.dtstamp.to_string(),
-            dtstart: homeserver_event.dtstart.to_string(),
+            dtstamp: homeserver_event.dtstamp,
+            dtstart: homeserver_event.dtstart,
             summary: homeserver_event.summary,
             // Optional fields
-            dtend: homeserver_event.dtend.map(|t| t.to_string()),
+            dtend: homeserver_event.dtend,
             duration: homeserver_event.duration,
+            dtstart_tzid: homeserver_event.dtstart_tzid,
+            dtend_tzid: homeserver_event.dtend_tzid,
             rrule: homeserver_event.rrule,
             rdate: homeserver_event.rdate,
             exdate: homeserver_event.exdate,
@@ -161,34 +134,16 @@ impl EventDetails {
             status: homeserver_event.status,
             location: homeserver_event.location,
             geo: homeserver_event.geo,
-            organizer,
             url: homeserver_event.url,
-            categories: homeserver_event.categories,
-            class: None,
-            priority: None,
             sequence: homeserver_event.sequence,
-            transp: None,
-            attach: None,
-            attendee: None,
-            comment: None,
-            contact: None,
-            related_to: None,
-            request_status: None,
-            resources: None,
+            last_modified: homeserver_event.last_modified,
+            created: homeserver_event.created,
+            recurrence_id: homeserver_event.recurrence_id,
             // RFC 7986
-            color: None,
-            conference,
-            image: homeserver_event.image_uri.map(|uri| vec![uri]),
-            structured_locations,
+            image_uri: homeserver_event.image_uri,
             styled_description,
-            // RFC 9073
-            participant_type: None,
-            resource_type: None,
-            structured_data: None,
-            styled_description_param: None,
             // Pubky extensions
-            x_pubky_recurrence_id: homeserver_event.recurrence_id.map(|id| id.to_string()),
-            x_pubky_calendar_uri: homeserver_event.x_pubky_calendar_uris.and_then(|uris| uris.into_iter().next()),
+            x_pubky_calendar_uris: homeserver_event.x_pubky_calendar_uris,
             x_pubky_rsvp_access: homeserver_event.x_pubky_rsvp_access,
         })
     }

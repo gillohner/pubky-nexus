@@ -949,7 +949,7 @@ pub fn get_calendar_by_id(author_id: &str, calendar_id: &str) -> Query {
             OPTIONAL MATCH (admin:User)-[:ADMIN]->(c)
             WITH u, c, COLLECT(DISTINCT admin.id) as admins
             RETURN {
-                uri: 'pubky://' + u.id + '/pub/pubky.app/calendar/' + c.id,
+                uri: 'pubky://' + u.id + '/pub/eventky.app/calendars/' + c.id,
                 id: c.id,
                 indexed_at: c.indexed_at,
                 author: u.id,
@@ -973,9 +973,9 @@ pub fn get_event_by_id(author_id: &str, event_id: &str) -> Query {
         "
             MATCH (u:User {id: $author_id})-[:AUTHORED]->(e:Event {id: $event_id})
             OPTIONAL MATCH (e)-[:BELONGS_TO]->(c:Calendar)<-[:AUTHORED]-(cal_author:User)
-            WITH u, e, COLLECT(DISTINCT 'pubky://' + cal_author.id + '/pub/pubky.app/calendar/' + c.id) as calendar_uris
+            WITH u, e, COLLECT(DISTINCT 'pubky://' + cal_author.id + '/pub/eventky.app/calendars/' + c.id) as calendar_uris
             RETURN {
-                uri: 'pubky://' + u.id + '/pub/pubky.app/event/' + e.id,
+                uri: 'pubky://' + u.id + '/pub/eventky.app/events/' + e.id,
                 id: e.id,
                 indexed_at: e.indexed_at,
                 author: u.id,
@@ -985,6 +985,8 @@ pub fn get_event_by_id(author_id: &str, event_id: &str) -> Query {
                 summary: e.summary,
                 dtend: e.dtend,
                 duration: e.duration,
+                dtstart_tzid: e.dtstart_tzid,
+                dtend_tzid: e.dtend_tzid,
                 rrule: e.rrule,
                 rdate: e.rdate,
                 exdate: e.exdate,
@@ -992,32 +994,15 @@ pub fn get_event_by_id(author_id: &str, event_id: &str) -> Query {
                 status: e.status,
                 location: e.location,
                 geo: e.geo,
-                organizer: e.organizer,
                 url: e.url,
-                categories: e.categories,
                 sequence: e.sequence,
-                conference: e.conference,
-                image: e.image,
-                structured_locations: e.structured_locations,
+                last_modified: e.last_modified,
+                created: e.created,
+                recurrence_id: e.recurrence_id,
+                image_uri: e.image_uri,
                 styled_description: e.styled_description,
-                x_pubky_recurrence_id: e.x_pubky_recurrence_id,
-                x_pubky_calendar_uri: CASE WHEN SIZE(calendar_uris) > 0 THEN calendar_uris ELSE NULL END,
-                x_pubky_rsvp_access: e.x_pubky_rsvp_access,
-                class: e.class,
-                priority: e.priority,
-                transp: e.transp,
-                attach: e.attach,
-                attendee: e.attendee,
-                comment: e.comment,
-                contact: e.contact,
-                related_to: e.related_to,
-                request_status: e.request_status,
-                resources: e.resources,
-                color: e.color,
-                participant_type: e.participant_type,
-                resource_type: e.resource_type,
-                structured_data: e.structured_data,
-                styled_description_param: e.styled_description_param
+                x_pubky_calendar_uris: CASE WHEN SIZE(calendar_uris) > 0 THEN calendar_uris ELSE NULL END,
+                x_pubky_rsvp_access: e.x_pubky_rsvp_access
             } as details
         ",
     )
@@ -1030,51 +1015,22 @@ pub fn get_attendee_by_id(author_id: &str, attendee_id: &str) -> Query {
         "
             MATCH (u:User {id: $author_id})-[:AUTHORED]->(a:Attendee {id: $attendee_id})
             OPTIONAL MATCH (a)-[:RSVP_TO]->(e:Event)<-[:AUTHORED]-(event_author:User)
-            WITH u, a, 'pubky://' + event_author.id + '/pub/pubky.app/event/' + e.id as event_uri
+            WITH u, a, 'pubky://' + event_author.id + '/pub/eventky.app/events/' + e.id as event_uri
             RETURN {
-                uri: 'pubky://' + u.id + '/pub/pubky.app/attendee/' + a.id,
+                uri: 'pubky://' + u.id + '/pub/eventky.app/attendees/' + a.id,
                 id: a.id,
                 indexed_at: a.indexed_at,
                 author: u.id,
-                attendee_uri: a.attendee_uri,
                 partstat: a.partstat,
                 x_pubky_event_uri: event_uri,
-                role: a.role,
-                rsvp: a.rsvp,
-                delegated_to: a.delegated_to,
-                delegated_from: a.delegated_from
+                created_at: a.created_at,
+                last_modified: a.last_modified,
+                recurrence_id: a.recurrence_id
             } as details
         ",
     )
     .param("author_id", author_id)
     .param("attendee_id", attendee_id)
-}
-
-pub fn get_alarm_by_id(author_id: &str, alarm_id: &str) -> Query {
-    query(
-        "
-            MATCH (u:User {id: $author_id})-[:AUTHORED]->(a:Alarm {id: $alarm_id})
-            OPTIONAL MATCH (a)-[:REMINDS]->(e:Event)<-[:AUTHORED]-(event_author:User)
-            WITH u, a, 'pubky://' + event_author.id + '/pub/pubky.app/event/' + e.id as target_uri
-            RETURN {
-                uri: 'pubky://' + u.id + '/pub/pubky.app/alarm/' + a.id,
-                id: a.id,
-                indexed_at: a.indexed_at,
-                author: u.id,
-                action: a.action,
-                trigger: a.trigger,
-                x_pubky_target_uri: target_uri,
-                duration: a.duration,
-                repeat: a.repeat,
-                attach: a.attach,
-                description: a.description,
-                summary: a.summary,
-                attendees: a.attendees
-            } as details
-        ",
-    )
-    .param("author_id", author_id)
-    .param("alarm_id", alarm_id)
 }
 
 // Stream calendars with optional filtering
@@ -1102,7 +1058,7 @@ pub fn stream_calendars(
         SKIP $skip
         LIMIT $limit
         RETURN {
-            uri: 'pubky://' + u.id + '/pub/pubky.app/calendar/' + c.id,
+            uri: 'pubky://' + u.id + '/pub/eventky.app/calendars/' + c.id,
             id: c.id,
             indexed_at: c.indexed_at,
             author: u.id,
@@ -1157,12 +1113,12 @@ pub fn stream_events(
     query_str.push_str(
         "
         OPTIONAL MATCH (e)-[:BELONGS_TO]->(c:Calendar)<-[:AUTHORED]-(cal_author:User)
-        WITH u, e, COLLECT(DISTINCT 'pubky://' + cal_author.id + '/pub/pubky.app/calendar/' + c.id) as calendar_uris
+        WITH u, e, COLLECT(DISTINCT 'pubky://' + cal_author.id + '/pub/eventky.app/calendars/' + c.id) as calendar_uris
         ORDER BY e.indexed_at DESC
         SKIP $skip
         LIMIT $limit
         RETURN {
-            uri: 'pubky://' + u.id + '/pub/pubky.app/event/' + e.id,
+            uri: 'pubky://' + u.id + '/pub/eventky.app/events/' + e.id,
             id: e.id,
             indexed_at: e.indexed_at,
             author: u.id,
@@ -1172,6 +1128,8 @@ pub fn stream_events(
             summary: e.summary,
             dtend: e.dtend,
             duration: e.duration,
+            dtstart_tzid: e.dtstart_tzid,
+            dtend_tzid: e.dtend_tzid,
             rrule: e.rrule,
             rdate: e.rdate,
             exdate: e.exdate,
@@ -1179,32 +1137,15 @@ pub fn stream_events(
             status: e.status,
             location: e.location,
             geo: e.geo,
-            organizer: e.organizer,
             url: e.url,
-            categories: e.categories,
             sequence: e.sequence,
-            conference: e.conference,
-            image: e.image,
-            structured_locations: e.structured_locations,
+            last_modified: e.last_modified,
+            created: e.created,
+            recurrence_id: e.recurrence_id,
+            image_uri: e.image_uri,
             styled_description: e.styled_description,
-            x_pubky_recurrence_id: e.x_pubky_recurrence_id,
-            x_pubky_calendar_uri: CASE WHEN SIZE(calendar_uris) > 0 THEN calendar_uris ELSE NULL END,
-            x_pubky_rsvp_access: e.x_pubky_rsvp_access,
-            class: e.class,
-            priority: e.priority,
-            transp: e.transp,
-            attach: e.attach,
-            attendee: e.attendee,
-            comment: e.comment,
-            contact: e.contact,
-            related_to: e.related_to,
-            request_status: e.request_status,
-            resources: e.resources,
-            color: e.color,
-            participant_type: e.participant_type,
-            resource_type: e.resource_type,
-            structured_data: e.structured_data,
-            styled_description_param: e.styled_description_param
+            x_pubky_calendar_uris: CASE WHEN SIZE(calendar_uris) > 0 THEN calendar_uris ELSE NULL END,
+            x_pubky_rsvp_access: e.x_pubky_rsvp_access
         } as event
         "
     );

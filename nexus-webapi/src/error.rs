@@ -41,11 +41,6 @@ pub enum Error {
         author_id: String,
         attendee_id: String,
     },
-    #[error("Alarm not found: {author_id} {alarm_id}")]
-    AlarmNotFound {
-        author_id: String,
-        alarm_id: String,
-    },
     // Add other custom errors here
 }
 
@@ -77,7 +72,6 @@ impl IntoResponse for Error {
             Error::CalendarNotFound { .. } => StatusCode::NOT_FOUND,
             Error::EventNotFound { .. } => StatusCode::NOT_FOUND,
             Error::AttendeeNotFound { .. } => StatusCode::NOT_FOUND,
-            Error::AlarmNotFound { .. } => StatusCode::NOT_FOUND,
             // Map other errors to appropriate status codes
         };
 
@@ -120,12 +114,6 @@ impl IntoResponse for Error {
                 attendee_id,
             } => {
                 error!("Attendee not found: {} {}", author_id, attendee_id)
-            }
-            Error::AlarmNotFound {
-                author_id,
-                alarm_id,
-            } => {
-                error!("Alarm not found: {} {}", author_id, alarm_id)
             }
             Error::InternalServerError { source } => error!("Internal server error: {:?}", source),
         };

@@ -1,4 +1,7 @@
+pub mod attendee;
 pub mod bookmark;
+pub mod calendar;
+pub mod event;
 pub mod file;
 pub mod follow;
 pub mod mute;

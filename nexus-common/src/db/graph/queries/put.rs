@@ -1,6 +1,6 @@
 use crate::models::post::PostRelationships;
 use crate::models::{
-    alarm::AlarmDetails, attendee::AttendeeDetails, calendar::CalendarDetails,
+    attendee::AttendeeDetails, calendar::CalendarDetails,
     event::EventDetails, file::FileDetails, post::PostDetails, user::UserDetails,
 };
 use crate::types::DynError;
@@ -363,32 +363,11 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
         .and_then(|r| serde_json::to_string(r).ok());
     let exdate = event.exdate.as_ref()
         .and_then(|e| serde_json::to_string(e).ok());
-    let categories = event.categories.as_ref()
+    let x_pubky_calendar_uris = event.x_pubky_calendar_uris.as_ref()
         .and_then(|c| serde_json::to_string(c).ok());
-    let conference = event.conference.as_ref()
-        .and_then(|c| serde_json::to_string(c).ok());
-    let image = event.image.as_ref()
-        .and_then(|i| serde_json::to_string(i).ok());
-    let attach = event.attach.as_ref()
-        .and_then(|a| serde_json::to_string(a).ok());
-    let attendee = event.attendee.as_ref()
-        .and_then(|a| serde_json::to_string(a).ok());
-    let comment = event.comment.as_ref()
-        .and_then(|c| serde_json::to_string(c).ok());
-    let contact = event.contact.as_ref()
-        .and_then(|c| serde_json::to_string(c).ok());
-    let related_to = event.related_to.as_ref()
-        .and_then(|r| serde_json::to_string(r).ok());
-    let request_status = event.request_status.as_ref()
-        .and_then(|r| serde_json::to_string(r).ok());
-    let resources = event.resources.as_ref()
-        .and_then(|r| serde_json::to_string(r).ok());
-    let participant_type = event.participant_type.as_ref()
-        .and_then(|p| serde_json::to_string(p).ok());
-    let resource_type = event.resource_type.as_ref()
-        .and_then(|r| serde_json::to_string(r).ok());
 
-    let query = query(
+    // Build cypher query with calendar relationships
+    let mut cypher = String::from(
         "MATCH (u:User {id: $author})
          MERGE (u)-[:AUTHORED]->(e:Event {id: $id})
          SET e.indexed_at = $indexed_at,
@@ -398,6 +377,8 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
              e.summary = $summary,
              e.dtend = $dtend,
              e.duration = $duration,
+             e.dtstart_tzid = $dtstart_tzid,
+             e.dtend_tzid = $dtend_tzid,
              e.rrule = $rrule,
              e.rdate = $rdate,
              e.exdate = $exdate,
@@ -405,42 +386,44 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
              e.status = $status,
              e.location = $location,
              e.geo = $geo,
-             e.organizer = $organizer,
              e.url = $url,
-             e.categories = $categories,
              e.sequence = $sequence,
-             e.conference = $conference,
-             e.image = $image,
-             e.structured_locations = $structured_locations,
+             e.last_modified = $last_modified,
+             e.created = $created,
+             e.recurrence_id = $recurrence_id,
+             e.image_uri = $image_uri,
              e.styled_description = $styled_description,
-             e.x_pubky_recurrence_id = $x_pubky_recurrence_id,
-             e.x_pubky_calendar_uri = $x_pubky_calendar_uri,
-             e.x_pubky_rsvp_access = $x_pubky_rsvp_access,
-             e.class = $class,
-             e.priority = $priority,
-             e.transp = $transp,
-             e.attach = $attach,
-             e.attendee = $attendee,
-             e.comment = $comment,
-             e.contact = $contact,
-             e.related_to = $related_to,
-             e.request_status = $request_status,
-             e.resources = $resources,
-             e.color = $color,
-             e.participant_type = $participant_type,
-             e.resource_type = $resource_type,
-             e.structured_data = $structured_data,
-             e.styled_description_param = $styled_description_param",
-    )
+             e.x_pubky_calendar_uris = $x_pubky_calendar_uris,
+             e.x_pubky_rsvp_access = $x_pubky_rsvp_access",
+    );
+
+    // Add BELONGS_TO relationships for calendars
+    if let Some(calendar_uris) = &event.x_pubky_calendar_uris {
+        for calendar_uri in calendar_uris {
+            if let Ok(parsed) = ParsedUri::try_from(calendar_uri.as_str()) {
+                if let Resource::Calendar(calendar_id) = parsed.resource {
+                    let author_id = parsed.user_id.as_str();
+                    cypher.push_str(&format!(
+                        "\nWITH e\nMATCH (c:Calendar {{id: '{}'}}) WHERE (c)<-[:AUTHORED]-(:User {{id: '{}'}})\nMERGE (e)-[:BELONGS_TO {{indexed_at: $indexed_at}}]->(c)",
+                        calendar_id, author_id
+                    ));
+                }
+            }
+        }
+    }
+
+    let query = query(&cypher)
     .param("author", event.author.clone())
     .param("id", event.id.clone())
     .param("indexed_at", event.indexed_at)
     .param("uid", event.uid.clone())
-    .param("dtstamp", event.dtstamp.clone())
+    .param("dtstamp", event.dtstamp)
     .param("dtstart", event.dtstart.clone())
     .param("summary", event.summary.clone())
     .param("dtend", event.dtend.clone())
     .param("duration", event.duration.clone())
+    .param("dtstart_tzid", event.dtstart_tzid.clone())
+    .param("dtend_tzid", event.dtend_tzid.clone())
     .param("rrule", event.rrule.clone())
     .param("rdate", rdate)
     .param("exdate", exdate)
@@ -448,95 +431,54 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
     .param("status", event.status.clone())
     .param("location", event.location.clone())
     .param("geo", event.geo.clone())
-    .param("organizer", event.organizer.clone())
     .param("url", event.url.clone())
-    .param("categories", categories)
     .param("sequence", event.sequence)
-    .param("conference", conference)
-    .param("image", image)
-    .param("structured_locations", event.structured_locations.clone())
+    .param("last_modified", event.last_modified)
+    .param("created", event.created)
+    .param("recurrence_id", event.recurrence_id)
+    .param("image_uri", event.image_uri.clone())
     .param("styled_description", event.styled_description.clone())
-    .param("x_pubky_recurrence_id", event.x_pubky_recurrence_id.clone())
-    .param("x_pubky_calendar_uri", event.x_pubky_calendar_uri.clone())
-    .param("x_pubky_rsvp_access", event.x_pubky_rsvp_access.clone())
-    .param("class", event.class.clone())
-    .param("priority", event.priority)
-    .param("transp", event.transp.clone())
-    .param("attach", attach)
-    .param("attendee", attendee)
-    .param("comment", comment)
-    .param("contact", contact)
-    .param("related_to", related_to)
-    .param("request_status", request_status)
-    .param("resources", resources)
-    .param("color", event.color.clone())
-    .param("participant_type", participant_type)
-    .param("resource_type", resource_type)
-    .param("structured_data", event.structured_data.clone())
-    .param("styled_description_param", event.styled_description_param.clone());
+    .param("x_pubky_calendar_uris", x_pubky_calendar_uris)
+    .param("x_pubky_rsvp_access", event.x_pubky_rsvp_access.clone());
 
     Ok(query)
 }
 
 pub fn create_attendee(attendee: &AttendeeDetails) -> Result<Query, DynError> {
-    let query = query(
-        "MATCH (u:User {id: $author})
-         MERGE (u)-[:AUTHORED]->(a:Attendee {id: $id})
+    // Parse the event URI to extract author and event ID
+    let parsed = ParsedUri::try_from(attendee.x_pubky_event_uri.as_str())
+        .map_err(|e| format!("Failed to parse event URI: {}", e))?;
+    
+    let event_id = match parsed.resource {
+        Resource::Event(id) => id,
+        _ => return Err("Invalid event URI in attendee".into()),
+    };
+    let event_author_id = parsed.user_id.as_str();
+
+    let cypher = format!(
+        "MATCH (u:User {{id: $author}})
+         MERGE (u)-[:AUTHORED]->(a:Attendee {{id: $id}})
          SET a.indexed_at = $indexed_at,
-             a.attendee_uri = $attendee_uri,
              a.partstat = $partstat,
              a.x_pubky_event_uri = $x_pubky_event_uri,
-             a.role = $role,
-             a.rsvp = $rsvp,
-             a.delegated_to = $delegated_to,
-             a.delegated_from = $delegated_from",
-    )
-    .param("author", attendee.author.clone())
-    .param("id", attendee.id.clone())
-    .param("indexed_at", attendee.indexed_at)
-    .param("attendee_uri", attendee.attendee_uri.clone())
-    .param("partstat", attendee.partstat.clone())
-    .param("x_pubky_event_uri", attendee.x_pubky_event_uri.clone())
-    .param("role", attendee.role.clone())
-    .param("rsvp", attendee.rsvp)
-    .param("delegated_to", attendee.delegated_to.clone())
-    .param("delegated_from", attendee.delegated_from.clone());
+             a.created_at = $created_at,
+             a.last_modified = $last_modified,
+             a.recurrence_id = $recurrence_id
+         WITH a
+         MATCH (e:Event {{id: '{}'}}) WHERE (e)<-[:AUTHORED]-(:User {{id: '{}'}})
+         MERGE (a)-[:RSVP_TO {{indexed_at: $indexed_at}}]->(e)",
+        event_id, event_author_id
+    );
 
-    Ok(query)
-}
-
-pub fn create_alarm(alarm: &AlarmDetails) -> Result<Query, DynError> {
-    let attach = alarm.attach.as_ref()
-        .and_then(|a| serde_json::to_string(a).ok());
-    let attendees = alarm.attendees.as_ref()
-        .and_then(|a| serde_json::to_string(a).ok());
-
-    let query = query(
-        "MATCH (u:User {id: $author})
-         MERGE (u)-[:AUTHORED]->(a:Alarm {id: $id})
-         SET a.indexed_at = $indexed_at,
-             a.action = $action,
-             a.trigger = $trigger,
-             a.x_pubky_target_uri = $x_pubky_target_uri,
-             a.duration = $duration,
-             a.repeat = $repeat,
-             a.attach = $attach,
-             a.description = $description,
-             a.summary = $summary,
-             a.attendees = $attendees",
-    )
-    .param("author", alarm.author.clone())
-    .param("id", alarm.id.clone())
-    .param("indexed_at", alarm.indexed_at)
-    .param("action", alarm.action.clone())
-    .param("trigger", alarm.trigger.clone())
-    .param("x_pubky_target_uri", alarm.x_pubky_target_uri.clone())
-    .param("duration", alarm.duration.clone())
-    .param("repeat", alarm.repeat)
-    .param("attach", attach)
-    .param("description", alarm.description.clone())
-    .param("summary", alarm.summary.clone())
-    .param("attendees", attendees);
+    let query = query(&cypher)
+        .param("author", attendee.author.clone())
+        .param("id", attendee.id.clone())
+        .param("indexed_at", attendee.indexed_at)
+        .param("partstat", attendee.partstat.clone())
+        .param("x_pubky_event_uri", attendee.x_pubky_event_uri.clone())
+        .param("created_at", attendee.created_at)
+        .param("last_modified", attendee.last_modified)
+        .param("recurrence_id", attendee.recurrence_id);
 
     Ok(query)
 }

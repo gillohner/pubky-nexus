@@ -84,7 +84,3 @@ pub const STREAM_EVENTS_ROUTE: &str = concatcp!(STREAM_PREFIX, "/events");
 const ATTENDEE_PREFIX: &str = concatcp!(VERSION_ROUTE, "/attendee");
 pub const ATTENDEE_ROUTE: &str = concatcp!(ATTENDEE_PREFIX, "/{author_id}/{attendee_id}");
 
-// -- ALARM endpoints --
-const ALARM_PREFIX: &str = concatcp!(VERSION_ROUTE, "/alarm");
-pub const ALARM_ROUTE: &str = concatcp!(ALARM_PREFIX, "/{author_id}/{alarm_id}");
-

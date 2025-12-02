@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Represents attendee/RSVP data for an event
+/// Simplified to match PubkyAppAttendee spec
 #[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
 pub struct AttendeeDetails {
     pub id: String,
@@ -16,14 +17,12 @@ pub struct AttendeeDetails {
     pub author: String,
     pub uri: String,
     // Required fields
-    pub attendee_uri: String,
     pub partstat: String,
     pub x_pubky_event_uri: String,
     // Optional fields
-    pub role: Option<String>,
-    pub rsvp: Option<bool>,
-    pub delegated_to: Option<String>,    // Note: singular, not Vec
-    pub delegated_from: Option<String>,  // Note: singular, not Vec
+    pub created_at: i64,
+    pub last_modified: Option<i64>,
+    pub recurrence_id: Option<i64>,
 }
 
 impl RedisOps for AttendeeDetails {}
@@ -97,13 +96,11 @@ impl AttendeeDetails {
             id: attendee_id.clone(),
             indexed_at: Utc::now().timestamp_millis(),
             author: author_id.to_string(),
-            attendee_uri: homeserver_attendee.attendee_uri,
             partstat: homeserver_attendee.partstat,
             x_pubky_event_uri: homeserver_attendee.x_pubky_event_uri,
-            role: homeserver_attendee.role,
-            rsvp: homeserver_attendee.rsvp,
-            delegated_to: homeserver_attendee.delegated_to,
-            delegated_from: homeserver_attendee.delegated_from,
+            created_at: homeserver_attendee.created_at,
+            last_modified: homeserver_attendee.last_modified,
+            recurrence_id: homeserver_attendee.recurrence_id,
         })
     }
 

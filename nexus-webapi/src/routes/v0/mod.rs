@@ -1,7 +1,6 @@
 use axum::Router;
 use utoipa::OpenApi;
 
-pub mod alarm;
 pub mod attendee;
 pub mod bootstrap;
 pub mod calendar;
@@ -35,7 +34,6 @@ pub fn routes(app_state: AppState) -> Router<AppState> {
     let route_calendar = calendar::routes();
     let route_event = event::routes();
     let route_attendee = attendee::routes();
-    let route_alarm = alarm::routes();
 
     routes_post
         .merge(routes_info)
@@ -49,7 +47,6 @@ pub fn routes(app_state: AppState) -> Router<AppState> {
         .merge(route_calendar)
         .merge(route_event)
         .merge(route_attendee)
-        .merge(route_alarm)
 }
 
 #[derive(OpenApi)]
@@ -71,7 +68,6 @@ impl ApiDoc {
         combined.merge(calendar::CalendarApiDoc::merge_docs());
         combined.merge(event::EventApiDoc::merge_docs());
         combined.merge(attendee::AttendeeApiDoc::merge_docs());
-        combined.merge(alarm::AlarmApiDoc::merge_docs());
         combined
     }
 }

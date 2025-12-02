@@ -152,6 +152,30 @@ impl Homeserver {
             .inspect(|_| tracing::info!("Ingested homeserver {hs_pk}"))
             .inspect_err(|e| tracing::error!("Failed to ingest homeserver {hs_pk}: {e}"))
     }
+
+    /// If a referenced calendar is hosted on a new, unknown homeserver, this method triggers ingestion of that homeserver.
+    ///
+    /// ### Arguments
+    ///
+    /// - `referenced_calendar_uri`: The URI of the referenced calendar
+    pub async fn maybe_ingest_for_calendar(referenced_calendar_uri: &str) -> Result<(), DynError> {
+        let parsed_calendar_uri = ParsedUri::try_from(referenced_calendar_uri)?;
+        let ref_calendar_author_id = parsed_calendar_uri.user_id.as_str();
+
+        Self::maybe_ingest_for_user(ref_calendar_author_id).await
+    }
+
+    /// If a referenced event is hosted on a new, unknown homeserver, this method triggers ingestion of that homeserver.
+    ///
+    /// ### Arguments
+    ///
+    /// - `referenced_event_uri`: The URI of the referenced event
+    pub async fn maybe_ingest_for_event(referenced_event_uri: &str) -> Result<(), DynError> {
+        let parsed_event_uri = ParsedUri::try_from(referenced_event_uri)?;
+        let ref_event_author_id = parsed_event_uri.user_id.as_str();
+
+        Self::maybe_ingest_for_user(ref_event_author_id).await
+    }
 }
 
 #[cfg(test)]

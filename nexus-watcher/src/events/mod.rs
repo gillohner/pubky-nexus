@@ -160,6 +160,15 @@ impl Event {
             (PubkyAppObject::File(file), Resource::File(file_id)) => {
                 handlers::file::sync_put(file, self.uri, user_id, file_id, self.files_path).await?
             }
+            (PubkyAppObject::Calendar(calendar), Resource::Calendar(calendar_id)) => {
+                handlers::calendar::sync_put(calendar, user_id, calendar_id).await?
+            }
+            (PubkyAppObject::Event(event), Resource::Event(event_id)) => {
+                handlers::event::sync_put(event, user_id, event_id).await?
+            }
+            (PubkyAppObject::Attendee(attendee), Resource::Attendee(attendee_id)) => {
+                handlers::attendee::sync_put(attendee, user_id, attendee_id).await?
+            }
             other => {
                 debug!("Event type not handled, Resource: {:?}", other);
             }
@@ -182,6 +191,13 @@ impl Event {
             Resource::Tag(tag_id) => handlers::tag::del(user_id, tag_id).await?,
             Resource::File(file_id) => {
                 handlers::file::del(&user_id, file_id, self.files_path).await?
+            }
+            Resource::Calendar(calendar_id) => {
+                handlers::calendar::del(user_id, calendar_id).await?
+            }
+            Resource::Event(event_id) => handlers::event::del(user_id, event_id).await?,
+            Resource::Attendee(attendee_id) => {
+                handlers::attendee::del(user_id, attendee_id).await?
             }
             other => {
                 debug!("DEL event type not handled for resource: {:?}", other);

@@ -136,12 +136,3 @@ pub fn delete_attendee(author_id: &str, attendee_id: &str) -> Query {
     .param("attendee_id", attendee_id)
 }
 
-pub fn delete_alarm(author_id: &str, alarm_id: &str) -> Query {
-    query(
-        "MATCH (u:User {id: $author_id})-[:AUTHORED]->(a:Alarm {id: $alarm_id})
-         DETACH DELETE a;",
-    )
-    .param("author_id", author_id)
-    .param("alarm_id", alarm_id)
-}
-

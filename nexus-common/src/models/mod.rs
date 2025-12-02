@@ -1,4 +1,3 @@
-pub mod alarm;
 pub mod attendee;
 pub mod bootstrap;
 pub mod calendar;
