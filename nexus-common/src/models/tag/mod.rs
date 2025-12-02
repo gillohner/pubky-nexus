@@ -1,4 +1,6 @@
+pub mod calendar;
 pub mod details;
+pub mod event;
 pub mod global;
 pub mod post;
 pub mod search;

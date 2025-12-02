@@ -13,6 +13,17 @@ pub struct TagsQuery {
     pub depth: Option<u8>,
 }
 
+#[derive(Default, Deserialize, Debug, ToSchema)]
+pub struct EventQuery {
+    pub limit_tags: Option<usize>,
+    pub skip_tags: Option<usize>,
+    pub limit_taggers: Option<usize>,
+    pub limit_attendees: Option<usize>,
+    pub viewer_id: Option<String>,
+    #[serde(default, deserialize_with = "parse_string_to_u8")]
+    pub depth: Option<u8>,
+}
+
 // Parsing strings or floats into f64
 fn parse_string_to_u8<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
 where

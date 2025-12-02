@@ -115,6 +115,24 @@ pub fn get_post_tags(author_id: &str, post_id: &str) -> Query {
     .param("post_id", post_id)
 }
 
+pub fn get_event_tags(author_id: &str, event_id: &str) -> Query {
+    query(
+        "MATCH (tagger:User)-[t:TAGGED]->(e:Event {id: $event_id})<-[:AUTHORED]-(author:User {id: $author_id})
+         RETURN tagger.id AS tagger_id, t.id AS tag_id",
+    )
+    .param("author_id", author_id)
+    .param("event_id", event_id)
+}
+
+pub fn get_calendar_tags(author_id: &str, calendar_id: &str) -> Query {
+    query(
+        "MATCH (tagger:User)-[t:TAGGED]->(c:Calendar {id: $calendar_id})<-[:AUTHORED]-(author:User {id: $author_id})
+         RETURN tagger.id AS tagger_id, t.id AS tag_id",
+    )
+    .param("author_id", author_id)
+    .param("calendar_id", calendar_id)
+}
+
 pub fn post_relationships(author_id: &str, post_id: &str) -> Query {
     query(
         "MATCH (u:User {id: $author_id})-[:AUTHORED]->(p:Post {id: $post_id})
@@ -232,6 +250,54 @@ pub fn user_tags(user_id: &str) -> neo4rs::Query {
     ",
     )
     .param("user_id", user_id)
+}
+
+// Retrieve all the tags of the event
+pub fn event_tags(user_id: &str, event_id: &str) -> neo4rs::Query {
+    query(
+        "
+        MATCH (u:User {id: $user_id})-[:AUTHORED]->(e:Event {id: $event_id})
+        CALL {
+            WITH e
+            MATCH (tagger:User)-[tag:TAGGED]->(e)
+            WITH tag.label AS name, collect(DISTINCT tagger.id) AS tagger_ids
+            RETURN collect({
+                label: name,
+                taggers: tagger_ids,
+                taggers_count: SIZE(tagger_ids)
+            }) AS tags
+        }
+        RETURN 
+            u IS NOT NULL AS exists,
+            tags
+    ",
+    )
+    .param("user_id", user_id)
+    .param("event_id", event_id)
+}
+
+// Retrieve all the tags of the calendar
+pub fn calendar_tags(user_id: &str, calendar_id: &str) -> neo4rs::Query {
+    query(
+        "
+        MATCH (u:User {id: $user_id})-[:AUTHORED]->(c:Calendar {id: $calendar_id})
+        CALL {
+            WITH c
+            MATCH (tagger:User)-[tag:TAGGED]->(c)
+            WITH tag.label AS name, collect(DISTINCT tagger.id) AS tagger_ids
+            RETURN collect({
+                label: name,
+                taggers: tagger_ids,
+                taggers_count: SIZE(tagger_ids)
+            }) AS tags
+        }
+        RETURN 
+            u IS NOT NULL AS exists,
+            tags
+    ",
+    )
+    .param("user_id", user_id)
+    .param("calendar_id", calendar_id)
 }
 
 /// Retrieve a homeserver by ID
@@ -1031,6 +1097,36 @@ pub fn get_attendee_by_id(author_id: &str, attendee_id: &str) -> Query {
     )
     .param("author_id", author_id)
     .param("attendee_id", attendee_id)
+}
+
+/// Get all attendees for an event
+pub fn get_attendees_for_event(
+    event_author_id: &str,
+    event_id: &str,
+    limit: usize,
+) -> Query {
+    query(
+        "
+            MATCH (event_author:User {id: $event_author_id})-[:AUTHORED]->(e:Event {id: $event_id})
+            MATCH (u:User)-[:AUTHORED]->(a:Attendee)-[:RSVP_TO]->(e)
+            RETURN {
+                uri: 'pubky://' + u.id + '/pub/eventky.app/attendees/' + a.id,
+                id: a.id,
+                indexed_at: a.indexed_at,
+                author: u.id,
+                partstat: a.partstat,
+                x_pubky_event_uri: 'pubky://' + event_author.id + '/pub/eventky.app/events/' + e.id,
+                created_at: a.created_at,
+                last_modified: a.last_modified,
+                recurrence_id: a.recurrence_id
+            } as attendee
+            ORDER BY a.indexed_at DESC
+            LIMIT $limit
+        ",
+    )
+    .param("event_author_id", event_author_id)
+    .param("event_id", event_id)
+    .param("limit", limit as i64)
 }
 
 // Stream calendars with optional filtering

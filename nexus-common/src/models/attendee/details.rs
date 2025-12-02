@@ -133,4 +133,30 @@ impl AttendeeDetails {
         Self::remove_from_index_multiple_json(&[&[author_id, attendee_id]]).await?;
         Ok(())
     }
+
+    /// Get all attendees for an event
+    pub async fn get_for_event(
+        event_author_id: &str,
+        event_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Option<Vec<AttendeeDetails>>, DynError> {
+        let query = queries::get::get_attendees_for_event(
+            event_author_id,
+            event_id,
+            limit.unwrap_or(100),
+        );
+        let rows = crate::db::fetch_all_rows_from_graph(query).await?;
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let mut attendees = Vec::new();
+        for row in rows {
+            let attendee: AttendeeDetails = row.get("attendee")?;
+            attendees.push(attendee);
+        }
+
+        Ok(Some(attendees))
+    }
 }

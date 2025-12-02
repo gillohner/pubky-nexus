@@ -1,35 +1,54 @@
 use crate::routes::v0::endpoints::CALENDAR_ROUTE;
+use crate::routes::v0::TagsQuery;
 use crate::{Error, Result};
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::Json;
-use nexus_common::models::calendar::CalendarDetails;
+use nexus_common::models::calendar::{CalendarDetails, CalendarView};
+use nexus_common::models::tag::calendar::TagCalendar;
+use nexus_common::models::tag::TagDetails;
 use tracing::info;
 use utoipa::OpenApi;
 
 #[utoipa::path(
     get,
     path = CALENDAR_ROUTE,
-    description = "Calendar view",
+    description = "Calendar view with tags",
     tag = "Calendar",
     params(
         ("author_id" = String, Path, description = "Author Pubky ID"),
-        ("calendar_id" = String, Path, description = "Calendar Crockford32 ID")
+        ("calendar_id" = String, Path, description = "Calendar Crockford32 ID"),
+        ("viewer_id" = Option<String>, Query, description = "Viewer Pubky ID"),
+        ("limit_tags" = Option<usize>, Query, description = "Upper limit on the number of tags for the calendar"),
+        ("limit_taggers" = Option<usize>, Query, description = "Upper limit on the number of taggers per tag")
     ),
     responses(
-        (status = 200, description = "Calendar", body = CalendarDetails),
+        (status = 200, description = "Calendar", body = CalendarView),
         (status = 404, description = "Calendar not found"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn calendar_view_handler(
     Path((author_id, calendar_id)): Path<(String, String)>,
-) -> Result<Json<CalendarDetails>> {
+    Query(query): Query<TagsQuery>,
+) -> Result<Json<CalendarView>> {
     info!(
-        "GET {CALENDAR_ROUTE} author_id:{}, calendar_id:{}",
-        author_id, calendar_id
+        "GET {CALENDAR_ROUTE} author_id:{}, calendar_id:{}, viewer_id:{}, limit_tags:{:?}, limit_taggers:{:?}",
+        author_id,
+        calendar_id,
+        query.viewer_id.clone().unwrap_or_default(),
+        query.limit_tags,
+        query.limit_taggers
     );
 
-    match CalendarDetails::get_by_id(&author_id, &calendar_id).await {
+    match CalendarView::get_by_id(
+        &author_id,
+        &calendar_id,
+        query.viewer_id.as_deref(),
+        query.limit_tags,
+        query.limit_taggers,
+    )
+    .await
+    {
         Ok(Some(calendar)) => Ok(Json(calendar)),
         Ok(None) => Err(Error::CalendarNotFound {
             author_id,
@@ -42,6 +61,6 @@ pub async fn calendar_view_handler(
 #[derive(OpenApi)]
 #[openapi(
     paths(calendar_view_handler),
-    components(schemas(CalendarDetails))
+    components(schemas(CalendarView, CalendarDetails, TagCalendar, TagDetails))
 )]
 pub struct CalendarViewApiDoc;
