@@ -36,7 +36,7 @@ pub struct EventDetails {
     pub sequence: Option<i32>,
     pub last_modified: Option<i64>,
     pub created: Option<i64>,
-    pub recurrence_id: Option<i64>,
+    pub recurrence_id: Option<String>,
     // RFC 7986 fields
     pub image_uri: Option<String>,
     pub styled_description: Option<String>,   // Serialized JSON

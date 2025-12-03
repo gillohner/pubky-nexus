@@ -22,7 +22,7 @@ pub struct AttendeeDetails {
     // Optional fields
     pub created_at: i64,
     pub last_modified: Option<i64>,
-    pub recurrence_id: Option<i64>,
+    pub recurrence_id: Option<String>,
 }
 
 impl RedisOps for AttendeeDetails {}

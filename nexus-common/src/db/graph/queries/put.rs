@@ -435,7 +435,7 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
     .param("sequence", event.sequence)
     .param("last_modified", event.last_modified)
     .param("created", event.created)
-    .param("recurrence_id", event.recurrence_id)
+    .param("recurrence_id", event.recurrence_id.clone())
     .param("image_uri", event.image_uri.clone())
     .param("styled_description", event.styled_description.clone())
     .param("x_pubky_calendar_uris", x_pubky_calendar_uris)
@@ -478,7 +478,7 @@ pub fn create_attendee(attendee: &AttendeeDetails) -> Result<Query, DynError> {
         .param("x_pubky_event_uri", attendee.x_pubky_event_uri.clone())
         .param("created_at", attendee.created_at)
         .param("last_modified", attendee.last_modified)
-        .param("recurrence_id", attendee.recurrence_id);
+        .param("recurrence_id", attendee.recurrence_id.clone());
 
     Ok(query)
 }
