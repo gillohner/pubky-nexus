@@ -332,6 +332,7 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
 
     let query = query(
         "MATCH (u:User {id: $author})
+         OPTIONAL MATCH (u)-[:AUTHORED]->(existing_cal:Calendar {id: $id})
          MERGE (u)-[:AUTHORED]->(c:Calendar {id: $id})
          SET c.indexed_at = $indexed_at,
              c.name = $name,
@@ -341,7 +342,8 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
              c.url = $url,
              c.image_uri = $image_uri,
              c.x_pubky_admins = $x_pubky_admins,
-             c.created = $created",
+             c.created = $created
+         RETURN existing_cal IS NOT NULL AS flag",
     )
     .param("author", calendar.author.clone())
     .param("id", calendar.id.clone())
@@ -369,6 +371,7 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
     // Build cypher query with calendar relationships
     let mut cypher = String::from(
         "MATCH (u:User {id: $author})
+         OPTIONAL MATCH (u)-[:AUTHORED]->(existing_event:Event {id: $id})
          MERGE (u)-[:AUTHORED]->(e:Event {id: $id})
          SET e.indexed_at = $indexed_at,
              e.uid = $uid,
@@ -404,13 +407,16 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
                 if let Resource::Calendar(calendar_id) = parsed.resource {
                     let author_id = parsed.user_id.as_str();
                     cypher.push_str(&format!(
-                        "\nWITH e\nMATCH (c:Calendar {{id: '{}'}}) WHERE (c)<-[:AUTHORED]-(:User {{id: '{}'}})\nMERGE (e)-[:BELONGS_TO {{indexed_at: $indexed_at}}]->(c)",
+                        "\nWITH e, existing_event\nMATCH (c:Calendar {{id: '{}'}}) WHERE (c)<-[:AUTHORED]-(:User {{id: '{}'}})\nMERGE (e)-[:BELONGS_TO {{indexed_at: $indexed_at}}]->(c)",
                         calendar_id, author_id
                     ));
                 }
             }
         }
     }
+
+    // Return flag to indicate if this was an update or create
+    cypher.push_str("\nRETURN existing_event IS NOT NULL AS flag");
 
     let query = query(&cypher)
     .param("author", event.author.clone())
@@ -457,6 +463,7 @@ pub fn create_attendee(attendee: &AttendeeDetails) -> Result<Query, DynError> {
 
     let cypher = format!(
         "MATCH (u:User {{id: $author}})
+         OPTIONAL MATCH (u)-[:AUTHORED]->(existing_att:Attendee {{id: $id}})
          MERGE (u)-[:AUTHORED]->(a:Attendee {{id: $id}})
          SET a.indexed_at = $indexed_at,
              a.partstat = $partstat,
@@ -464,9 +471,10 @@ pub fn create_attendee(attendee: &AttendeeDetails) -> Result<Query, DynError> {
              a.created_at = $created_at,
              a.last_modified = $last_modified,
              a.recurrence_id = $recurrence_id
-         WITH a
+         WITH a, existing_att
          MATCH (e:Event {{id: '{}'}}) WHERE (e)<-[:AUTHORED]-(:User {{id: '{}'}})
-         MERGE (a)-[:RSVP_TO {{indexed_at: $indexed_at}}]->(e)",
+         MERGE (a)-[:RSVP_TO {{indexed_at: $indexed_at}}]->(e)
+         RETURN existing_att IS NOT NULL AS flag",
         event_id, event_author_id
     );
 
