@@ -1,0 +1,49 @@
+[api]
+# Service name used for tracing, logging, and metrics in OpenTelemetry
+name = "nexusd.api"
+# The public IP address where the Nexus API endpoint can be reached from the outside
+public_ip = "127.0.0.1"
+# The local IP and port to which the HTTP server will bind and listen on
+# This HTTP endpoint can be used for the ICANN DNS-based TLS setup, for example via a reverse proxy
+public_addr = "127.0.0.1:8080"
+# The local IP and port to which the HTTPS (Pkarr TLS) server will bind and listen on
+pubky_listen_socket = "127.0.0.1:8081"
+
+[watcher]
+# Service name used for tracing, logging, and metrics in OpenTelemetry
+name = "nexusd.watcher"
+testnet = true
+# testnet host, leave as "localhost" for local development. Change only if the
+# testnet homeserver/relay are on another machine (e.g. Docker setups).
+testnet_host = "localhost"
+homeserver = "8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo"
+events_limit = 50
+watcher_sleep = 5000
+# User public key to trust for moderating content
+moderation_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+# Tags on content to de-index when placed by the trusted moderator above
+moderated_tags = [
+    "hatespeech",
+    "harassement",
+    "terrorism",
+    "violence",
+    "illegal_activities",
+    "il_adult_nu_sex_act",
+]
+
+
+[stack]
+# Logging, options: error, warn, info, debug and trace
+log_level = "info"
+files_path = "~/.pubky-nexus/static/files"
+# OTLP_ENDPOINT is set to empty by default. If you want to enable tracing, set it to the OpenTelemetry Collector endpoint
+#otlp_endpoint="http://localhost:4317"
+
+[stack.db]
+redis = "redis://127.0.0.1:6379"
+
+[stack.db.neo4j]
+uri = "bolt://localhost:7687"
+# Not needed in the Community Edition the profile username, just the password
+#user = "neo4j"
+password = "12345678"

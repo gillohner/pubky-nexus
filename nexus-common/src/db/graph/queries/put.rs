@@ -290,6 +290,80 @@ pub fn create_user_tag(
     .param("indexed_at", indexed_at)
 }
 
+/// Creates a `TAGGED` relationship between a user and an event authored by another user.
+/// The tag is uniquely identified by a `label` and is associated with the event.
+/// # Arguments
+/// * `user_id` - The unique identifier of the user tagging the event.
+/// * `author_id` - The unique identifier of the user who authored the event.
+/// * `event_id` - The unique identifier of the event being tagged.
+/// * `tag_id` - A unique identifier for the tagging relationship.
+/// * `label` - A string representing the label of the tag.
+/// * `indexed_at` - A timestamp representing when the tagging relationship was created or last updated.
+pub fn create_event_tag(
+    user_id: &str,
+    author_id: &str,
+    event_id: &str,
+    tag_id: &str,
+    label: &str,
+    indexed_at: i64,
+) -> Query {
+    query(
+        "MATCH (user:User {id: $user_id})
+        // We assume these nodes are already created. If not we would not be able to add a tag
+        MATCH (author:User {id: $author_id})-[:AUTHORED]->(event:Event {id: $event_id})
+        // Check if tag already existed
+        OPTIONAL MATCH (user)-[existing:TAGGED {label: $label}]->(event) 
+        MERGE (user)-[t:TAGGED {label: $label}]->(event)
+        SET t.indexed_at = $indexed_at,
+            t.id = $tag_id
+        // Returns true if the event tag relationship already existed
+        RETURN existing IS NOT NULL AS flag;",
+    )
+    .param("user_id", user_id)
+    .param("author_id", author_id)
+    .param("event_id", event_id)
+    .param("tag_id", tag_id)
+    .param("label", label)
+    .param("indexed_at", indexed_at)
+}
+
+/// Creates a `TAGGED` relationship between a user and a calendar authored by another user.
+/// The tag is uniquely identified by a `label` and is associated with the calendar.
+/// # Arguments
+/// * `user_id` - The unique identifier of the user tagging the calendar.
+/// * `author_id` - The unique identifier of the user who authored the calendar.
+/// * `calendar_id` - The unique identifier of the calendar being tagged.
+/// * `tag_id` - A unique identifier for the tagging relationship.
+/// * `label` - A string representing the label of the tag.
+/// * `indexed_at` - A timestamp representing when the tagging relationship was created or last updated.
+pub fn create_calendar_tag(
+    user_id: &str,
+    author_id: &str,
+    calendar_id: &str,
+    tag_id: &str,
+    label: &str,
+    indexed_at: i64,
+) -> Query {
+    query(
+        "MATCH (user:User {id: $user_id})
+        // We assume these nodes are already created. If not we would not be able to add a tag
+        MATCH (author:User {id: $author_id})-[:AUTHORED]->(calendar:Calendar {id: $calendar_id})
+        // Check if tag already existed
+        OPTIONAL MATCH (user)-[existing:TAGGED {label: $label}]->(calendar) 
+        MERGE (user)-[t:TAGGED {label: $label}]->(calendar)
+        SET t.indexed_at = $indexed_at,
+            t.id = $tag_id
+        // Returns true if the calendar tag relationship already existed
+        RETURN existing IS NOT NULL AS flag;",
+    )
+    .param("user_id", user_id)
+    .param("author_id", author_id)
+    .param("calendar_id", calendar_id)
+    .param("tag_id", tag_id)
+    .param("label", label)
+    .param("indexed_at", indexed_at)
+}
+
 /// Create a file node
 pub fn create_file(file: &FileDetails) -> Result<Query, DynError> {
     let urls = serde_json::to_string(&file.urls)?;
@@ -365,12 +439,10 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
 }
 
 pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
-    let rdate = event.rdate.as_ref()
-        .and_then(|r| serde_json::to_string(r).ok());
-    let exdate = event.exdate.as_ref()
-        .and_then(|e| serde_json::to_string(e).ok());
-    let x_pubky_calendar_uris = event.x_pubky_calendar_uris.as_ref()
-        .and_then(|c| serde_json::to_string(c).ok());
+    // Store arrays as native Neo4j lists, not JSON strings
+    let rdate = event.rdate.clone();
+    let exdate = event.exdate.clone();
+    let x_pubky_calendar_uris = event.x_pubky_calendar_uris.clone();
 
     // Build cypher query with calendar relationships
     let mut cypher = String::from(

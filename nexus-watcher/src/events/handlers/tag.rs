@@ -8,6 +8,8 @@ use nexus_common::models::homeserver::Homeserver;
 use nexus_common::models::notification::Notification;
 use nexus_common::models::post::search::PostsByTagSearch;
 use nexus_common::models::post::{PostCounts, PostStream};
+use nexus_common::models::tag::calendar::TagCalendar;
+use nexus_common::models::tag::event::TagEvent;
 use nexus_common::models::tag::post::TagPost;
 use nexus_common::models::tag::search::TagSearch;
 use nexus_common::models::tag::traits::{TagCollection, TaggersCollection};
@@ -24,11 +26,12 @@ pub async fn sync_put(
     tagger_id: PubkyId,
     tag_id: String,
 ) -> Result<(), DynError> {
-    debug!("Indexing new tag: {} -> {}", tagger_id, tag_id);
+    debug!("Indexing new tag: {} -> {} on URI: {}", tagger_id, tag_id, tag.uri);
 
-    // Parse the embeded URI to extract author_id and post_id using parse_tagged_post_uri
+    // Parse the embeded URI to extract author_id and resource_id using parse_tagged_post_uri
     let parsed_uri = ParsedUri::try_from(tag.uri.as_str())?;
     let user_id = parsed_uri.user_id;
+    debug!("Parsed tag URI: user_id={}, resource={:?}", user_id, parsed_uri.resource);
     let indexed_at = Utc::now().timestamp_millis();
 
     match parsed_uri.resource {
@@ -42,8 +45,22 @@ pub async fn sync_put(
         }
         // If no post_id in the tagged URI, we place tag to a user.
         Resource::User => put_sync_user(tagger_id, user_id, &tag_id, &tag.label, indexed_at).await,
+        // If event_id is in the tagged URI, we place tag to an event.
+        Resource::Event(event_id) => {
+            put_sync_event(
+                tagger_id, user_id, &event_id, &tag_id, &tag.label, &tag.uri, indexed_at,
+            )
+            .await
+        }
+        // If calendar_id is in the tagged URI, we place tag to a calendar.
+        Resource::Calendar(calendar_id) => {
+            put_sync_calendar(
+                tagger_id, user_id, &calendar_id, &tag_id, &tag.label, &tag.uri, indexed_at,
+            )
+            .await
+        }
         other => {
-            Err(format!("The tagged resource is not Post or User, instead is: {other:?}").into())
+            Err(format!("The tagged resource is not Post, User, Event, or Calendar, instead is: {other:?}").into())
         }
     }
 }
@@ -258,19 +275,169 @@ async fn put_sync_user(
     }
 }
 
+/// Handles the synchronization of a tagged event by updating the graph, indexes, and related counts.
+/// # Arguments
+/// - `tagger_user_id` - The `PubkyId` of the user tagging the event.
+/// - `author_id` - The `PubkyId` of the author of the tagged event.
+/// - `event_id` - A `String` representing the unique identifier of the event being tagged.
+/// - `tag_id` - A `String` representing the unique identifier of the tag.
+/// - `tag_label` - A `String` representing the label of the tag.
+/// - `event_uri` - A `String` representing the homeserver URI of the tagged event.
+/// - `indexed_at` - A 64-bit integer representing the timestamp when the event was indexed.
+async fn put_sync_event(
+    tagger_user_id: PubkyId,
+    author_id: PubkyId,
+    event_id: &str,
+    tag_id: &str,
+    tag_label: &str,
+    event_uri: &str,
+    indexed_at: i64,
+) -> Result<(), DynError> {
+    match TagEvent::put_to_graph(
+        &tagger_user_id,
+        &author_id,
+        Some(event_id),
+        tag_id,
+        tag_label,
+        indexed_at,
+    )
+    .await?
+    {
+        OperationOutcome::Updated => Ok(()),
+        OperationOutcome::MissingDependency => {
+            // Ensure that dependencies follow the same format as the RetryManager keys
+            let dependency = vec![format!("{author_id}:events:{event_id}")];
+            if let Err(e) = Homeserver::maybe_ingest_for_event(event_uri).await {
+                tracing::error!("Failed to ingest homeserver: {e}");
+            }
+            Err(EventProcessorError::MissingDependency { dependency }.into())
+        }
+        OperationOutcome::CreatedOrDeleted => {
+            let tag_label_slice = &[tag_label.to_string()];
+
+            let indexing_results = tokio::join!(
+                // Update user counts for tagger
+                UserCounts::update(&tagger_user_id, "tagged", JsonAction::Increment(1), None),
+                // Increment the label count to event
+                TagEvent::update_index_score(
+                    &author_id,
+                    Some(event_id),
+                    tag_label,
+                    ScoreAction::Increment(1.0),
+                ),
+                // Add user tag in event
+                TagEvent::add_tagger_to_index(&author_id, Some(event_id), &tagger_user_id, tag_label),
+                // Save new notification (reuse post tag notification pattern for now)
+                // TODO: Add specific event tag notification type
+                Notification::new_post_tag(&tagger_user_id, &author_id, tag_label, event_uri),
+                TagSearch::put_to_index(tag_label_slice)
+            );
+
+            handle_indexing_results!(
+                indexing_results.0,
+                indexing_results.1,
+                indexing_results.2,
+                indexing_results.3,
+                indexing_results.4
+            );
+
+            Ok(())
+        }
+    }
+}
+
+/// Handles the synchronization of a tagged calendar by updating the graph, indexes, and related counts.
+/// # Arguments
+/// - `tagger_user_id` - The `PubkyId` of the user tagging the calendar.
+/// - `author_id` - The `PubkyId` of the author of the tagged calendar.
+/// - `calendar_id` - A `String` representing the unique identifier of the calendar being tagged.
+/// - `tag_id` - A `String` representing the unique identifier of the tag.
+/// - `tag_label` - A `String` representing the label of the tag.
+/// - `calendar_uri` - A `String` representing the homeserver URI of the tagged calendar.
+/// - `indexed_at` - A 64-bit integer representing the timestamp when the calendar was indexed.
+async fn put_sync_calendar(
+    tagger_user_id: PubkyId,
+    author_id: PubkyId,
+    calendar_id: &str,
+    tag_id: &str,
+    tag_label: &str,
+    calendar_uri: &str,
+    indexed_at: i64,
+) -> Result<(), DynError> {
+    match TagCalendar::put_to_graph(
+        &tagger_user_id,
+        &author_id,
+        Some(calendar_id),
+        tag_id,
+        tag_label,
+        indexed_at,
+    )
+    .await?
+    {
+        OperationOutcome::Updated => Ok(()),
+        OperationOutcome::MissingDependency => {
+            // Ensure that dependencies follow the same format as the RetryManager keys
+            let dependency = vec![format!("{author_id}:calendars:{calendar_id}")];
+            if let Err(e) = Homeserver::maybe_ingest_for_calendar(calendar_uri).await {
+                tracing::error!("Failed to ingest homeserver: {e}");
+            }
+            Err(EventProcessorError::MissingDependency { dependency }.into())
+        }
+        OperationOutcome::CreatedOrDeleted => {
+            let tag_label_slice = &[tag_label.to_string()];
+
+            let indexing_results = tokio::join!(
+                // Update user counts for tagger
+                UserCounts::update(&tagger_user_id, "tagged", JsonAction::Increment(1), None),
+                // Increment the label count to calendar
+                TagCalendar::update_index_score(
+                    &author_id,
+                    Some(calendar_id),
+                    tag_label,
+                    ScoreAction::Increment(1.0),
+                ),
+                // Add user tag in calendar
+                TagCalendar::add_tagger_to_index(&author_id, Some(calendar_id), &tagger_user_id, tag_label),
+                // Save new notification (reuse post tag notification pattern for now)
+                // TODO: Add specific calendar tag notification type
+                Notification::new_post_tag(&tagger_user_id, &author_id, tag_label, calendar_uri),
+                TagSearch::put_to_index(tag_label_slice)
+            );
+
+            handle_indexing_results!(
+                indexing_results.0,
+                indexing_results.1,
+                indexing_results.2,
+                indexing_results.3,
+                indexing_results.4
+            );
+
+            Ok(())
+        }
+    }
+}
+
 pub async fn del(user_id: PubkyId, tag_id: String) -> Result<(), DynError> {
     debug!("Deleting tag: {} -> {}", user_id, tag_id);
     let tag_details = TagUser::del_from_graph(&user_id, &tag_id).await?;
     // CHOOSE THE EVENT TYPE
-    if let Some((tagged_user_id, post_id, author_id, label)) = tag_details {
-        match (tagged_user_id, post_id, author_id) {
+    if let Some((tagged_user_id, post_id, author_id, event_id, calendar_id, label)) = tag_details {
+        match (tagged_user_id, post_id, author_id, event_id, calendar_id) {
             // Delete user related indexes
-            (Some(tagged_id), None, None) => {
+            (Some(tagged_id), None, None, None, None) => {
                 del_sync_user(user_id, &tagged_id, &label).await?;
             }
             // Delete post related indexes
-            (None, Some(post_id), Some(author_id)) => {
+            (None, Some(post_id), Some(author_id), None, None) => {
                 del_sync_post(user_id, &post_id, &author_id, &label).await?;
+            }
+            // Delete event related indexes
+            (None, None, Some(author_id), Some(event_id), None) => {
+                del_sync_event(user_id, &event_id, &author_id, &label).await?;
+            }
+            // Delete calendar related indexes
+            (None, None, Some(author_id), None, Some(calendar_id)) => {
+                del_sync_calendar(user_id, &calendar_id, &author_id, &label).await?;
             }
             // Handle other unexpected cases
             _ => {
@@ -397,6 +564,68 @@ async fn del_sync_post(
         indexing_results.3,
         indexing_results.4,
         indexing_results.5
+    );
+
+    Ok(())
+}
+
+async fn del_sync_event(
+    tagger_id: PubkyId,
+    event_id: &str,
+    author_id: &str,
+    tag_label: &str,
+) -> Result<(), DynError> {
+    let tag_event = TagEvent(vec![tagger_id.to_string()]);
+
+    let indexing_results = tokio::join!(
+        // Update user counts for tagger
+        UserCounts::update(&tagger_id, "tagged", JsonAction::Decrement(1), None),
+        // Decrement label score in the event
+        TagEvent::update_index_score(
+            author_id,
+            Some(event_id),
+            tag_label,
+            ScoreAction::Decrement(1.0),
+        ),
+        // Delete the tagger from the tag list
+        tag_event.del_from_index(author_id, Some(event_id), tag_label)
+    );
+
+    handle_indexing_results!(
+        indexing_results.0,
+        indexing_results.1,
+        indexing_results.2
+    );
+
+    Ok(())
+}
+
+async fn del_sync_calendar(
+    tagger_id: PubkyId,
+    calendar_id: &str,
+    author_id: &str,
+    tag_label: &str,
+) -> Result<(), DynError> {
+    let tag_calendar = TagCalendar(vec![tagger_id.to_string()]);
+
+    let indexing_results = tokio::join!(
+        // Update user counts for tagger
+        UserCounts::update(&tagger_id, "tagged", JsonAction::Decrement(1), None),
+        // Decrement label score in the calendar
+        TagCalendar::update_index_score(
+            author_id,
+            Some(calendar_id),
+            tag_label,
+            ScoreAction::Decrement(1.0),
+        ),
+        // Delete the tagger from the tag list
+        tag_calendar.del_from_index(author_id, Some(calendar_id), tag_label)
+    );
+
+    handle_indexing_results!(
+        indexing_results.0,
+        indexing_results.1,
+        indexing_results.2
     );
 
     Ok(())

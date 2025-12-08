@@ -365,7 +365,7 @@ where
         Ok(())
     }
 
-    /// Deletes a tag relationship between a user and a tagged target (User or Post) in the graph database.
+    /// Deletes a tag relationship between a user and a tagged target (User, Post, Event, or Calendar) in the graph database.
     /// # Arguments
     /// * `user_id` - The ID of the user who owns the tag relationship.
     /// * `tag_id` - The ID of the tag to be deleted.
@@ -373,10 +373,12 @@ where
     /// # Returns
     ///
     /// A `Result` containing:
-    /// * `Some((Option<String>, Option<String>, Option<String>, String))`: If the tag was found and deleted:
+    /// * `Some((Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String))`: If the tag was found and deleted:
     ///   - `Option<String>` for the `user_id` of the target (if the target is a user, otherwise `None`),
     ///   - `Option<String>` for the `post_id` of the target (if the target is a post, otherwise `None`),
-    ///   - `Option<String>` for the `author_id` of the post (if applicable, otherwise `None`),
+    ///   - `Option<String>` for the `author_id` of the post/event/calendar (if applicable, otherwise `None`),
+    ///   - `Option<String>` for the `event_id` of the target (if the target is an event, otherwise `None`),
+    ///   - `Option<String>` for the `calendar_id` of the target (if the target is a calendar, otherwise `None`),
     ///   - `String` for the tag label.
     /// * `None` if no matching tag relationship is found.
     ///
@@ -386,7 +388,7 @@ where
     async fn del_from_graph(
         user_id: &str,
         tag_id: &str,
-    ) -> Result<Option<(Option<String>, Option<String>, Option<String>, String)>, DynError> {
+    ) -> Result<Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String)>, DynError> {
         let query = queries::del::delete_tag(user_id, tag_id);
         let maybe_row = fetch_row_from_graph(query).await?;
 
@@ -397,8 +399,10 @@ where
         let user_id: Option<String> = row.get("user_id").unwrap_or(None);
         let author_id: Option<String> = row.get("author_id").unwrap_or(None);
         let post_id: Option<String> = row.get("post_id").unwrap_or(None);
+        let event_id: Option<String> = row.get("event_id").unwrap_or(None);
+        let calendar_id: Option<String> = row.get("calendar_id").unwrap_or(None);
         let label: String = row.get("label").expect("Query should return tag label");
-        Ok(Some((user_id, post_id, author_id, label)))
+        Ok(Some((user_id, post_id, author_id, event_id, calendar_id, label)))
     }
 
     /// Returns the unique key parts used to identify a tag in the Redis database
