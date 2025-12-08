@@ -1143,9 +1143,12 @@ pub fn stream_calendars(
         "
     );
 
-    // Add admin filter if specified
+    // Add admin filter if specified - includes calendars where user is owner OR has ADMIN relationship
+    // Using pattern comprehension for Neo4j 4.x compatibility
     if admin.is_some() {
-        query_str.push_str("MATCH (admin_user:User {id: $admin})-[:ADMIN]->(c) ");
+        query_str.push_str(
+            "WHERE u.id = $admin OR EXISTS((:User {id: $admin})-[:ADMIN]->(c)) "
+        );
     }
 
     query_str.push_str(
@@ -1183,6 +1186,26 @@ pub fn stream_calendars(
     }
 
     q
+}
+
+/// Get event URIs belonging to a calendar
+/// Returns all events that have a BELONGS_TO relationship with the calendar
+pub fn get_calendar_event_uris(author_id: &str, calendar_id: &str, limit: Option<usize>) -> Query {
+    let limit_val = limit.unwrap_or(100) as i64;
+    
+    query(
+        "
+        MATCH (cal_author:User {id: $author_id})-[:AUTHORED]->(c:Calendar {id: $calendar_id})
+        MATCH (e:Event)-[:BELONGS_TO]->(c)
+        MATCH (event_author:User)-[:AUTHORED]->(e)
+        RETURN 'pubky://' + event_author.id + '/pub/eventky.app/events/' + e.id AS event_uri
+        ORDER BY e.dtstart DESC
+        LIMIT $limit
+        "
+    )
+    .param("author_id", author_id)
+    .param("calendar_id", calendar_id)
+    .param("limit", limit_val)
 }
 
 // Stream events with optional filtering

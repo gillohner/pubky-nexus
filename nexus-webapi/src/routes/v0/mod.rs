@@ -17,7 +17,7 @@ mod types;
 pub mod user;
 pub mod utils;
 
-pub use types::{EventQuery, TaggersInfoResponse, TagsQuery};
+pub use types::{CalendarQuery, EventQuery, TaggersInfoResponse, TagsQuery};
 
 use super::AppState;
 
