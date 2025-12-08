@@ -342,7 +342,9 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
              c.url = $url,
              c.image_uri = $image_uri,
              c.x_pubky_admins = $x_pubky_admins,
-             c.created = $created
+             c.created = $created,
+             c.sequence = $sequence,
+             c.last_modified = $last_modified
          RETURN existing_cal IS NOT NULL AS flag",
     )
     .param("author", calendar.author.clone())
@@ -355,7 +357,9 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
     .param("url", calendar.url.clone())
     .param("image_uri", calendar.image_uri.clone())
     .param("x_pubky_admins", x_pubky_admins)
-    .param("created", calendar.created);
+    .param("created", calendar.created)
+    .param("sequence", calendar.sequence)
+    .param("last_modified", calendar.last_modified);
 
     Ok(query)
 }

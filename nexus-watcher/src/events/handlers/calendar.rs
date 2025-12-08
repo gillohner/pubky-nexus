@@ -26,19 +26,25 @@ pub async fn sync_put(
     };
 
     if existed {
-        // If the calendar existed, this is an edit
-        debug!("Calendar {}/{} updated", author_id, calendar_id);
-    }
-
-    // Save to Redis index
-    if let Err(e) = calendar_details
-        .put_to_index(&author_id, &calendar_id)
-        .await
-    {
-        return Err(EventProcessorError::IndexWriteFailed {
-            message: format!("calendar index write failed - {:?}", e.to_string()),
+        // If the calendar existed, this is an edit - reindex from graph to ensure consistency
+        debug!("Calendar {}/{} updated, reindexing", author_id, calendar_id);
+        if let Err(e) = CalendarDetails::reindex(&author_id, &calendar_id).await {
+            return Err(EventProcessorError::IndexWriteFailed {
+                message: format!("calendar reindex failed - {:?}", e.to_string()),
+            }
+            .into());
         }
-        .into());
+    } else {
+        // Save to Redis index for new calendars
+        if let Err(e) = calendar_details
+            .put_to_index(&author_id, &calendar_id)
+            .await
+        {
+            return Err(EventProcessorError::IndexWriteFailed {
+                message: format!("calendar index write failed - {:?}", e.to_string()),
+            }
+            .into());
+        }
     }
 
     Ok(())

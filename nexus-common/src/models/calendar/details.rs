@@ -23,6 +23,8 @@ pub struct CalendarDetails {
     pub image_uri: Option<String>,
     pub x_pubky_admins: Option<Vec<String>>,
     pub created: Option<i64>,
+    pub sequence: Option<i32>,         // Versioning: incremented on each edit
+    pub last_modified: Option<i64>,    // Versioning: timestamp of last modification
 }
 
 impl RedisOps for CalendarDetails {}
@@ -102,6 +104,8 @@ impl CalendarDetails {
             image_uri: homeserver_calendar.image_uri,
             x_pubky_admins: homeserver_calendar.x_pubky_admins,
             created: homeserver_calendar.created,
+            sequence: homeserver_calendar.sequence,
+            last_modified: homeserver_calendar.last_modified,
             id: calendar_id.clone(),
             indexed_at: Utc::now().timestamp_millis(),
             author: author_id.to_string(),

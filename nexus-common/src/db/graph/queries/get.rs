@@ -1026,7 +1026,9 @@ pub fn get_calendar_by_id(author_id: &str, calendar_id: &str) -> Query {
                 url: c.url,
                 image_uri: c.image_uri,
                 x_pubky_admins: CASE WHEN SIZE(admins) > 0 THEN admins ELSE NULL END,
-                created: c.created
+                created: c.created,
+                sequence: c.sequence,
+                last_modified: c.last_modified
             } as details
         ",
     )
@@ -1165,7 +1167,9 @@ pub fn stream_calendars(
             url: c.url,
             image_uri: c.image_uri,
             x_pubky_admins: CASE WHEN SIZE(admins) > 0 THEN admins ELSE NULL END,
-            created: c.created
+            created: c.created,
+            sequence: c.sequence,
+            last_modified: c.last_modified
         } as calendar
         "
     );

@@ -47,16 +47,22 @@ pub async fn sync_put(
     };
 
     if existed {
-        // If the event existed, this is an edit
-        debug!("Event {}/{} updated", author_id, event_id);
-    }
-
-    // Save to Redis index
-    if let Err(e) = event_details.put_to_index(&author_id, &event_id).await {
-        return Err(EventProcessorError::IndexWriteFailed {
-            message: format!("event index write failed - {:?}", e.to_string()),
+        // If the event existed, this is an edit - reindex from graph to ensure consistency
+        debug!("Event {}/{} updated, reindexing", author_id, event_id);
+        if let Err(e) = EventDetails::reindex(&author_id, &event_id).await {
+            return Err(EventProcessorError::IndexWriteFailed {
+                message: format!("event reindex failed - {:?}", e.to_string()),
+            }
+            .into());
         }
-        .into());
+    } else {
+        // Save to Redis index for new events
+        if let Err(e) = event_details.put_to_index(&author_id, &event_id).await {
+            return Err(EventProcessorError::IndexWriteFailed {
+                message: format!("event index write failed - {:?}", e.to_string()),
+            }
+            .into());
+        }
     }
 
     Ok(())
