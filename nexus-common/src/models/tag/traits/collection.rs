@@ -7,8 +7,6 @@ use async_trait::async_trait;
 use neo4rs::Query;
 use tracing::error;
 
-use crate::models::tag::{post::POST_TAGS_KEY_PARTS, user::USER_TAGS_KEY_PARTS};
-
 use crate::models::tag::TagDetails;
 
 const CACHE_SORTED_SET_PREFIX: &str = "Cache:Sorted";
@@ -261,12 +259,12 @@ where
         .await
     }
 
-    /// Updates the score of a label in the appropriate Redis index (user or post) based on the given score action.
+    /// Updates the score of a label in the appropriate Redis index based on the given score action.
     ///
     /// # Arguments
     ///
     /// * `author_id` - A string slice representing the ID of the author whose index is being updated.
-    /// * `extra_param` - An optional parameter for specifying additional context, such as a post ID.
+    /// * `extra_param` - An optional parameter for specifying additional context, such as a post/event/calendar ID.
     /// * `label` - A string slice representing the label whose score is to be updated.
     /// * `score_action` - The action to perform on the label's score, encapsulated in the `ScoreAction` type
     ///   (e.g., increment, decrement, or set a specific score).
@@ -276,9 +274,10 @@ where
         label: &str,
         score_action: ScoreAction,
     ) -> Result<(), DynError> {
+        let prefix = Self::get_tag_prefix();
         let key: Vec<&str> = match extra_param {
-            Some(post_id) => [&POST_TAGS_KEY_PARTS[..], &[author_id, post_id]].concat(),
-            None => [&USER_TAGS_KEY_PARTS[..], &[author_id]].concat(),
+            Some(resource_id) => [&prefix[..], &[author_id, resource_id]].concat(),
+            None => [&prefix[..], &[author_id]].concat(),
         };
         Self::put_score_index_sorted_set(&key, &[label], score_action).await
     }
@@ -287,7 +286,7 @@ where
     /// # Arguments
     ///
     /// *`author_id` - A string slice representing the ID of the author whose index is being updated.
-    /// * `extra_param` - An optional parameter for specifying additional context, such as a post ID.
+    /// * `extra_param` - An optional parameter for specifying additional context, such as a post/event/calendar ID.
     /// * `tagger_user_id` - A string slice representing the ID of the user (tagger) being added to the index.
     /// * `tag_label` - A string slice representing the label of the tag to which the tagger is being added.
     ///
@@ -298,7 +297,7 @@ where
         tag_label: &str,
     ) -> Result<(), DynError> {
         let key = match extra_param {
-            Some(post_id) => vec![author_id, post_id, tag_label],
+            Some(resource_id) => vec![author_id, resource_id, tag_label],
             None => vec![author_id, tag_label],
         };
         Self::put_index_set(&key, &[tagger_user_id], None, None).await
@@ -310,8 +309,8 @@ where
     ///
     /// - `tagger_user_id` - A string slice representing the ID of the user (tagger) creating the tag.
     /// - `tagged_user_id` - A string slice representing the ID of the user being tagged.
-    /// - `extra_param` - An optional parameter for specifying additional context, such as a post ID.
-    ///   If `Some`, the function creates a tag relationship associated with a specific post;
+    /// - `extra_param` - An optional parameter for specifying additional context, such as a post ID, event ID, or calendar ID.
+    ///   If `Some`, the function creates a tag relationship associated with the specific resource;
     ///   otherwise, it creates a tag relationship between users.
     /// - `tag_id` - A string slice representing the unique identifier of the tag being created.
     /// - `label` - A string slice representing the label of the tag.
@@ -325,8 +324,9 @@ where
         label: &str,
         indexed_at: i64,
     ) -> Result<OperationOutcome, DynError> {
-        let query = match extra_param {
-            Some(post_id) => queries::put::create_post_tag(
+        let prefix = Self::get_tag_prefix();
+        let query = match (prefix[0], extra_param) {
+            ("Posts", Some(post_id)) => queries::put::create_post_tag(
                 tagger_user_id,
                 tagged_user_id,
                 post_id,
@@ -334,13 +334,30 @@ where
                 label,
                 indexed_at,
             ),
-            None => queries::put::create_user_tag(
+            ("Events", Some(event_id)) => queries::put::create_event_tag(
+                tagger_user_id,
+                tagged_user_id,
+                event_id,
+                tag_id,
+                label,
+                indexed_at,
+            ),
+            ("Calendars", Some(calendar_id)) => queries::put::create_calendar_tag(
+                tagger_user_id,
+                tagged_user_id,
+                calendar_id,
+                tag_id,
+                label,
+                indexed_at,
+            ),
+            ("Users", None) | (_, None) => queries::put::create_user_tag(
                 tagger_user_id,
                 tagged_user_id,
                 tag_id,
                 label,
                 indexed_at,
             ),
+            _ => return Err(format!("Unexpected tag type: {} with extra_param", prefix[0]).into()),
         };
         execute_graph_operation(query).await
     }
@@ -411,13 +428,17 @@ where
     /// Creates a Neo4j query to retrieve tags
     /// # Arguments
     /// * user_id - The key of the user for whom to start the retrieval of the tag.
-    /// * extra_param - An optional parameter for specifying additional constraints on the query. Options: post_id
+    /// * extra_param - An optional parameter for specifying additional constraints on the query (post_id, event_id, calendar_id)
     /// # Returns
     /// A query object representing the query to execute in Neo4j.
     fn read_graph_query(user_id: &str, extra_param: Option<&str>) -> Query {
-        match extra_param {
-            Some(extra_id) => queries::get::post_tags(user_id, extra_id),
-            None => queries::get::user_tags(user_id),
+        let prefix = Self::get_tag_prefix();
+        match (prefix[0], extra_param) {
+            ("Posts", Some(post_id)) => queries::get::post_tags(user_id, post_id),
+            ("Events", Some(event_id)) => queries::get::event_tags(user_id, event_id),
+            ("Calendars", Some(calendar_id)) => queries::get::calendar_tags(user_id, calendar_id),
+            ("Users", None) | (_, None) => queries::get::user_tags(user_id),
+            _ => panic!("Unexpected tag type: {} with extra_param", prefix[0]),
         }
     }
 
