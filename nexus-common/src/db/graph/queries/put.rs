@@ -549,7 +549,8 @@ pub fn create_attendee(attendee: &AttendeeDetails) -> Result<Query, DynError> {
              a.recurrence_id = $recurrence_id
          WITH a, existing_att
          MATCH (e:Event {{id: '{}'}}) WHERE (e)<-[:AUTHORED]-(:User {{id: '{}'}})
-         MERGE (a)-[:RSVP_TO {{indexed_at: $indexed_at}}]->(e)
+         MERGE (a)-[r:RSVP_TO]->(e)
+         SET r.indexed_at = $indexed_at
          RETURN existing_att IS NOT NULL AS flag",
         event_id, event_author_id
     );
