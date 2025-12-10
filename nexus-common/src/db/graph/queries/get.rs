@@ -1013,7 +1013,26 @@ pub fn get_calendar_by_id(author_id: &str, calendar_id: &str) -> Query {
         "
             MATCH (u:User {id: $author_id})-[:AUTHORED]->(c:Calendar {id: $calendar_id})
             OPTIONAL MATCH (admin:User)-[:ADMIN]->(c)
-            WITH u, c, COLLECT(DISTINCT admin.id) as admins
+            WITH u, c, COLLECT(DISTINCT admin.id) as relationship_admins
+            // Use relationship admins if available, otherwise extract user IDs from stored URIs
+            // Stored URIs are like 'pubky://{user_id}/pub/pubky.app/profile.json'
+            WITH u, c, relationship_admins,
+                 CASE 
+                   WHEN c.x_pubky_admins IS NOT NULL THEN 
+                     [uri IN c.x_pubky_admins | 
+                       CASE 
+                         WHEN uri STARTS WITH 'pubky://' THEN split(split(uri, 'pubky://')[1], '/')[0]
+                         ELSE uri
+                       END
+                     ]
+                   ELSE NULL 
+                 END as stored_admin_ids
+            WITH u, c,
+                 CASE 
+                   WHEN SIZE(relationship_admins) > 0 THEN relationship_admins
+                   WHEN stored_admin_ids IS NOT NULL AND SIZE(stored_admin_ids) > 0 THEN stored_admin_ids
+                   ELSE NULL 
+                 END as admins
             RETURN {
                 uri: 'pubky://' + u.id + '/pub/eventky.app/calendars/' + c.id,
                 id: c.id,
@@ -1025,7 +1044,7 @@ pub fn get_calendar_by_id(author_id: &str, calendar_id: &str) -> Query {
                 description: c.description,
                 url: c.url,
                 image_uri: c.image_uri,
-                x_pubky_admins: CASE WHEN SIZE(admins) > 0 THEN admins ELSE NULL END,
+                x_pubky_admins: admins,
                 created: c.created,
                 sequence: c.sequence,
                 last_modified: c.last_modified
@@ -1143,18 +1162,44 @@ pub fn stream_calendars(
         "
     );
 
-    // Add admin filter if specified - includes calendars where user is owner OR has ADMIN relationship
-    // Using pattern comprehension for Neo4j 4.x compatibility
+    // Add admin filter if specified - includes calendars where user is:
+    // 1. The owner (author)
+    // 2. Has an ADMIN relationship to the calendar
+    // 3. Is in the stored x_pubky_admins property (as URI or plain ID)
     if admin.is_some() {
         query_str.push_str(
-            "WHERE u.id = $admin OR EXISTS((:User {id: $admin})-[:ADMIN]->(c)) "
+            "WHERE u.id = $admin 
+             OR EXISTS((:User {id: $admin})-[:ADMIN]->(c))
+             OR (c.x_pubky_admins IS NOT NULL AND (
+                   $admin IN c.x_pubky_admins 
+                   OR ('pubky://' + $admin + '/pub/pubky.app/profile.json') IN c.x_pubky_admins
+                 )) "
         );
     }
 
     query_str.push_str(
         "
         OPTIONAL MATCH (admin:User)-[:ADMIN]->(c)
-        WITH u, c, COLLECT(DISTINCT admin.id) as admins
+        WITH u, c, COLLECT(DISTINCT admin.id) as relationship_admins
+        // Extract user IDs from stored URIs (pubky://{user_id}/pub/pubky.app/profile.json)
+        WITH u, c, relationship_admins,
+             CASE 
+               WHEN c.x_pubky_admins IS NOT NULL THEN 
+                 [uri IN c.x_pubky_admins | 
+                   CASE 
+                     WHEN uri STARTS WITH 'pubky://' THEN split(split(uri, 'pubky://')[1], '/')[0]
+                     ELSE uri
+                   END
+                 ]
+               ELSE NULL 
+             END as stored_admin_ids
+        // Use relationship admins if available, otherwise fall back to extracted IDs
+        WITH u, c,
+             CASE 
+               WHEN SIZE(relationship_admins) > 0 THEN relationship_admins
+               WHEN stored_admin_ids IS NOT NULL AND SIZE(stored_admin_ids) > 0 THEN stored_admin_ids
+               ELSE NULL 
+             END as admins
         ORDER BY c.indexed_at DESC
         SKIP $skip
         LIMIT $limit
@@ -1169,7 +1214,7 @@ pub fn stream_calendars(
             description: c.description,
             url: c.url,
             image_uri: c.image_uri,
-            x_pubky_admins: CASE WHEN SIZE(admins) > 0 THEN admins ELSE NULL END,
+            x_pubky_admins: admins,
             created: c.created,
             sequence: c.sequence,
             last_modified: c.last_modified

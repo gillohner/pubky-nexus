@@ -401,10 +401,11 @@ pub fn create_homeserver(homeserver_id: &str) -> Query {
 // Calendar creation functions
 
 pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
-    let x_pubky_admins = calendar.x_pubky_admins.as_ref()
-        .and_then(|a| serde_json::to_string(a).ok());
+    // Store x_pubky_admins as native Neo4j list, not JSON string
+    let x_pubky_admins = calendar.x_pubky_admins.clone();
 
-    let query = query(
+    // Build cypher query with admin relationships
+    let mut cypher = String::from(
         "MATCH (u:User {id: $author})
          OPTIONAL MATCH (u)-[:AUTHORED]->(existing_cal:Calendar {id: $id})
          MERGE (u)-[:AUTHORED]->(c:Calendar {id: $id})
@@ -418,9 +419,28 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
              c.x_pubky_admins = $x_pubky_admins,
              c.created = $created,
              c.sequence = $sequence,
-             c.last_modified = $last_modified
-         RETURN existing_cal IS NOT NULL AS flag",
-    )
+             c.last_modified = $last_modified",
+    );
+
+    // First, delete existing ADMIN relationships (so removed admins are cleaned up)
+    cypher.push_str("\nWITH c, existing_cal\nOPTIONAL MATCH (admin:User)-[r:ADMIN]->(c)\nDELETE r");
+
+    // Add ADMIN relationships for each admin user
+    // Use OPTIONAL MATCH + FOREACH to handle non-existent users gracefully
+    // The MATCH would fail if the user doesn't exist, causing the whole query to fail
+    if let Some(admin_ids) = &calendar.x_pubky_admins {
+        for admin_id in admin_ids {
+            cypher.push_str(&format!(
+                "\nWITH c, existing_cal\nOPTIONAL MATCH (admin:User {{id: '{}'}})\nFOREACH (_ IN CASE WHEN admin IS NOT NULL THEN [1] ELSE [] END | MERGE (admin)-[:ADMIN {{indexed_at: $indexed_at}}]->(c))",
+                admin_id
+            ));
+        }
+    }
+
+    // Return flag to indicate if this was an update or create
+    cypher.push_str("\nRETURN existing_cal IS NOT NULL AS flag");
+
+    let query = query(&cypher)
     .param("author", calendar.author.clone())
     .param("id", calendar.id.clone())
     .param("indexed_at", calendar.indexed_at)
@@ -475,6 +495,9 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
              e.x_pubky_calendar_uris = $x_pubky_calendar_uris,
              e.x_pubky_rsvp_access = $x_pubky_rsvp_access",
     );
+
+    // First, delete existing BELONGS_TO relationships (so removed calendars are cleaned up)
+    cypher.push_str("\nWITH e, existing_event\nOPTIONAL MATCH (e)-[r:BELONGS_TO]->(:Calendar)\nDELETE r");
 
     // Add BELONGS_TO relationships for calendars
     if let Some(calendar_uris) = &event.x_pubky_calendar_uris {
