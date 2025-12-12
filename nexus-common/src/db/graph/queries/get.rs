@@ -1155,6 +1155,8 @@ pub fn stream_calendars(
     skip: usize,
     limit: usize,
     admin: Option<String>,
+    author: Option<String>,
+    timezone: Option<String>,
 ) -> Query {
     let mut query_str = String::from(
         "
@@ -1162,19 +1164,37 @@ pub fn stream_calendars(
         "
     );
 
+    let mut where_clauses = Vec::new();
+
     // Add admin filter if specified - includes calendars where user is:
     // 1. The owner (author)
     // 2. Has an ADMIN relationship to the calendar
     // 3. Is in the stored x_pubky_admins property (as URI or plain ID)
     if admin.is_some() {
-        query_str.push_str(
-            "WHERE u.id = $admin 
+        where_clauses.push(
+            "(u.id = $admin 
              OR EXISTS((:User {id: $admin})-[:ADMIN]->(c))
              OR (c.x_pubky_admins IS NOT NULL AND (
                    $admin IN c.x_pubky_admins 
                    OR ('pubky://' + $admin + '/pub/pubky.app/profile.json') IN c.x_pubky_admins
-                 )) "
+                 )))".to_string()
         );
+    }
+
+    // Add author filter if specified
+    if author.is_some() {
+        where_clauses.push("u.id = $author".to_string());
+    }
+
+    // Add timezone filter if specified
+    if timezone.is_some() {
+        where_clauses.push("c.timezone = $timezone".to_string());
+    }
+
+    if !where_clauses.is_empty() {
+        query_str.push_str("WHERE ");
+        query_str.push_str(&where_clauses.join(" AND "));
+        query_str.push(' ');
     }
 
     query_str.push_str(
@@ -1230,6 +1250,14 @@ pub fn stream_calendars(
         q = q.param("admin", admin_id);
     }
 
+    if let Some(author_id) = author {
+        q = q.param("author", author_id);
+    }
+
+    if let Some(tz) = timezone {
+        q = q.param("timezone", tz);
+    }
+
     q
 }
 
@@ -1261,6 +1289,9 @@ pub fn stream_events(
     status: Option<String>,
     start_date: Option<i64>,
     end_date: Option<i64>,
+    author: Option<String>,
+    timezone: Option<String>,
+    rsvp_access: Option<String>,
 ) -> Query {
     let mut query_str = String::from(
         "
@@ -1273,9 +1304,32 @@ pub fn stream_events(
         query_str.push_str("MATCH (e)-[:BELONGS_TO]->(c:Calendar {id: $calendar}) ");
     }
 
+    let mut where_clauses = Vec::new();
+
     // Add status filter if specified
     if status.is_some() {
-        query_str.push_str("WHERE e.status = $status ");
+        where_clauses.push("e.status = $status".to_string());
+    }
+
+    // Add author filter if specified
+    if author.is_some() {
+        where_clauses.push("u.id = $author".to_string());
+    }
+
+    // Add timezone filter if specified
+    if timezone.is_some() {
+        where_clauses.push("e.dtstart_tzid = $timezone".to_string());
+    }
+
+    // Add RSVP access filter if specified
+    if rsvp_access.is_some() {
+        where_clauses.push("e.x_pubky_rsvp_access = $rsvp_access".to_string());
+    }
+
+    if !where_clauses.is_empty() {
+        query_str.push_str("WHERE ");
+        query_str.push_str(&where_clauses.join(" AND "));
+        query_str.push(' ');
     }
 
     query_str.push_str(
@@ -1328,6 +1382,18 @@ pub fn stream_events(
 
     if let Some(event_status) = status {
         q = q.param("status", event_status);
+    }
+
+    if let Some(author_id) = author {
+        q = q.param("author", author_id);
+    }
+
+    if let Some(tz) = timezone {
+        q = q.param("timezone", tz);
+    }
+
+    if let Some(access) = rsvp_access {
+        q = q.param("rsvp_access", access);
     }
 
     if let Some(start) = start_date {

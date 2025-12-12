@@ -21,7 +21,6 @@ impl EventView {
     pub async fn get_by_id(
         author_id: &str,
         event_id: &str,
-        viewer_id: Option<&str>,
         limit_tags: Option<usize>,
         limit_taggers: Option<usize>,
         limit_attendees: Option<usize>,
@@ -40,7 +39,7 @@ impl EventView {
                 None,
                 limit_tags,
                 limit_taggers,
-                viewer_id,
+                None,
                 None,
             ),
             AttendeeDetails::get_for_event(author_id, event_id, limit_attendees),

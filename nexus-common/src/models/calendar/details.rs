@@ -147,8 +147,10 @@ impl CalendarDetails {
         skip: usize,
         limit: usize,
         admin: Option<String>,
+        author: Option<String>,
+        timezone: Option<String>,
     ) -> Result<Vec<CalendarDetails>, DynError> {
-        let query = queries::get::stream_calendars(skip, limit, admin);
+        let query = queries::get::stream_calendars(skip, limit, admin, author, timezone);
         let rows = crate::db::fetch_all_rows_from_graph(query).await?;
         let mut calendars = Vec::new();
 

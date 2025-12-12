@@ -186,8 +186,11 @@ impl EventDetails {
         status: Option<String>,
         start_date: Option<i64>,
         end_date: Option<i64>,
+        author: Option<String>,
+        timezone: Option<String>,
+        rsvp_access: Option<String>,
     ) -> Result<Vec<EventDetails>, DynError> {
-        let query = queries::get::stream_events(skip, limit, calendar, status, start_date, end_date);
+        let query = queries::get::stream_events(skip, limit, calendar, status, start_date, end_date, author, timezone, rsvp_access);
         let rows = crate::db::fetch_all_rows_from_graph(query).await?;
         let mut events = Vec::new();
 

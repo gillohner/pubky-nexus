@@ -15,6 +15,8 @@ pub struct CalendarStreamQuery {
     pub pagination: Pagination,
     pub tags: Option<Vec<String>>,
     pub admin: Option<String>,
+    pub author: Option<String>,
+    pub timezone: Option<String>,
 }
 
 impl CalendarStreamQuery {
@@ -31,8 +33,10 @@ impl CalendarStreamQuery {
     params(
         ("limit" = Option<usize>, Query, description = "Number of results to return (default: 50, max: 100)"),
         ("skip" = Option<usize>, Query, description = "Number of results to skip (default: 0)"),
-        ("tags" = Option<Vec<String>>, Query, description = "Comma-separated list of tags to filter by"),
+        ("tags" = Option<Vec<String>>, Query, description = "Filter by a list of comma-separated tags (max 5). E.g., `&tags=tech,personal,public`. Only calendars matching at least one of the tags will be returned."),
         ("admin" = Option<String>, Query, description = "Filter calendars where user is admin"),
+        ("author" = Option<String>, Query, description = "Filter calendars by author/creator user ID"),
+        ("timezone" = Option<String>, Query, description = "Filter calendars by timezone (e.g., America/New_York, UTC)"),
     ),
     responses(
         (status = 200, description = "Calendar stream", body = CalendarStream),
@@ -50,11 +54,11 @@ pub async fn stream_calendars_handler(
     let limit = query.pagination.limit.unwrap_or(10);
     
     info!(
-        "GET {STREAM_CALENDARS_ROUTE} skip:{:?}, limit:{:?}, tags:{:?}, admin:{:?}",
-        skip, limit, query.tags, query.admin
+        "GET {STREAM_CALENDARS_ROUTE} skip:{:?}, limit:{:?}, tags:{:?}, admin:{:?}, author:{:?}, timezone:{:?}",
+        skip, limit, query.tags, query.admin, query.author, query.timezone
     );
 
-    match CalendarDetails::stream(skip, limit, query.admin).await {
+    match CalendarDetails::stream(skip, limit, query.admin, query.author, query.timezone).await {
         Ok(calendars) => Ok(Json(calendars)),
         Err(source) => Err(Error::InternalServerError { source }),
     }

@@ -18,7 +18,6 @@ use utoipa::OpenApi;
     params(
         ("author_id" = String, Path, description = "Author Pubky ID"),
         ("event_id" = String, Path, description = "Event Crockford32 ID"),
-        ("viewer_id" = Option<String>, Query, description = "Viewer Pubky ID"),
         ("limit_tags" = Option<usize>, Query, description = "Upper limit on the number of tags for the event"),
         ("limit_taggers" = Option<usize>, Query, description = "Upper limit on the number of taggers per tag"),
         ("limit_attendees" = Option<usize>, Query, description = "Upper limit on the number of attendees")
@@ -34,10 +33,9 @@ pub async fn event_view_handler(
     Query(query): Query<EventQuery>,
 ) -> Result<Json<EventView>> {
     info!(
-        "GET {EVENT_ROUTE} author_id:{}, event_id:{}, viewer_id:{}, limit_tags:{:?}, limit_taggers:{:?}, limit_attendees:{:?}",
+        "GET {EVENT_ROUTE} author_id:{}, event_id:{}, limit_tags:{:?}, limit_taggers:{:?}, limit_attendees:{:?}",
         author_id,
         event_id,
-        query.viewer_id.clone().unwrap_or_default(),
         query.limit_tags,
         query.limit_taggers,
         query.limit_attendees
@@ -46,7 +44,6 @@ pub async fn event_view_handler(
     match EventView::get_by_id(
         &author_id,
         &event_id,
-        query.viewer_id.as_deref(),
         query.limit_tags,
         query.limit_taggers,
         query.limit_attendees,

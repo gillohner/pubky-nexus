@@ -22,14 +22,12 @@ impl CalendarView {
     pub async fn get_by_id(
         author_id: &str,
         calendar_id: &str,
-        viewer_id: Option<&str>,
         limit_tags: Option<usize>,
         limit_taggers: Option<usize>,
     ) -> Result<Option<Self>, DynError> {
         Self::get_by_id_with_events(
             author_id,
             calendar_id,
-            viewer_id,
             limit_tags,
             limit_taggers,
             None, // default event limit
@@ -41,7 +39,6 @@ impl CalendarView {
     pub async fn get_by_id_with_events(
         author_id: &str,
         calendar_id: &str,
-        viewer_id: Option<&str>,
         limit_tags: Option<usize>,
         limit_taggers: Option<usize>,
         limit_events: Option<usize>,
@@ -59,7 +56,7 @@ impl CalendarView {
             None,
             limit_tags,
             limit_taggers,
-            viewer_id,
+            None,
             None,
         )
         .await?

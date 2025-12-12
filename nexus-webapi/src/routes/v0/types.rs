@@ -19,7 +19,6 @@ pub struct CalendarQuery {
     pub skip_tags: Option<usize>,
     pub limit_taggers: Option<usize>,
     pub limit_events: Option<usize>,
-    pub viewer_id: Option<String>,
     #[serde(default, deserialize_with = "parse_string_to_u8")]
     pub depth: Option<u8>,
 }
@@ -30,7 +29,6 @@ pub struct EventQuery {
     pub skip_tags: Option<usize>,
     pub limit_taggers: Option<usize>,
     pub limit_attendees: Option<usize>,
-    pub viewer_id: Option<String>,
     #[serde(default, deserialize_with = "parse_string_to_u8")]
     pub depth: Option<u8>,
 }

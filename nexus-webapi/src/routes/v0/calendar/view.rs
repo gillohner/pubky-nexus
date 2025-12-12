@@ -17,7 +17,6 @@ use utoipa::OpenApi;
     params(
         ("author_id" = String, Path, description = "Author Pubky ID"),
         ("calendar_id" = String, Path, description = "Calendar Crockford32 ID"),
-        ("viewer_id" = Option<String>, Query, description = "Viewer Pubky ID"),
         ("limit_tags" = Option<usize>, Query, description = "Upper limit on the number of tags for the calendar"),
         ("limit_taggers" = Option<usize>, Query, description = "Upper limit on the number of taggers per tag"),
         ("limit_events" = Option<usize>, Query, description = "Upper limit on the number of event URIs to return (default: 100)")
@@ -33,10 +32,9 @@ pub async fn calendar_view_handler(
     Query(query): Query<CalendarQuery>,
 ) -> Result<Json<CalendarView>> {
     info!(
-        "GET {CALENDAR_ROUTE} author_id:{}, calendar_id:{}, viewer_id:{}, limit_tags:{:?}, limit_taggers:{:?}, limit_events:{:?}",
+        "GET {CALENDAR_ROUTE} author_id:{}, calendar_id:{}, limit_tags:{:?}, limit_taggers:{:?}, limit_events:{:?}",
         author_id,
         calendar_id,
-        query.viewer_id.clone().unwrap_or_default(),
         query.limit_tags,
         query.limit_taggers,
         query.limit_events
@@ -45,7 +43,6 @@ pub async fn calendar_view_handler(
     match CalendarView::get_by_id_with_events(
         &author_id,
         &calendar_id,
-        query.viewer_id.as_deref(),
         query.limit_tags,
         query.limit_taggers,
         query.limit_events,
