@@ -21,7 +21,7 @@ pub struct CalendarDetails {
     pub description: Option<String>,
     pub url: Option<String>,
     pub image_uri: Option<String>,
-    pub x_pubky_admins: Option<Vec<String>>,
+    pub x_pubky_authors: Option<Vec<String>>,
     pub created: Option<i64>,
     pub sequence: Option<i32>,         // Versioning: incremented on each edit
     pub last_modified: Option<i64>,    // Versioning: timestamp of last modification
@@ -102,7 +102,7 @@ impl CalendarDetails {
             description: homeserver_calendar.description,
             url: homeserver_calendar.url,
             image_uri: homeserver_calendar.image_uri,
-            x_pubky_admins: homeserver_calendar.x_pubky_admins,
+            x_pubky_authors: homeserver_calendar.x_pubky_authors,
             created: homeserver_calendar.created,
             sequence: homeserver_calendar.sequence,
             last_modified: homeserver_calendar.last_modified,

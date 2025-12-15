@@ -19,6 +19,10 @@ pub struct EventDetails {
     pub uid: String,
     pub dtstamp: i64,
     pub dtstart: String,
+    /// Parsed dtstart as Unix microseconds for efficient filtering/sorting
+    /// This is derived from dtstart and dtstart_tzid
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dtstart_timestamp: Option<i64>,
     pub summary: String,
     // Optional RFC 5545 fields
     pub dtend: Option<String>,
@@ -48,6 +52,32 @@ pub struct EventDetails {
 impl RedisOps for EventDetails {}
 
 impl EventDetails {
+    /// Parse ISO 8601 datetime string to Unix microseconds
+    /// Handles both timezone-aware and naive datetimes
+    fn parse_dtstart_to_timestamp(dtstart: &str, _tzid: Option<&str>) -> Option<i64> {
+        use chrono::{DateTime, NaiveDateTime};
+        
+        // Try parsing as RFC3339/ISO8601 with timezone
+        if let Ok(dt) = DateTime::parse_from_rfc3339(dtstart) {
+            return Some(dt.timestamp_micros());
+        }
+        
+        // Try parsing as naive datetime (no timezone)
+        if let Ok(naive_dt) = NaiveDateTime::parse_from_str(dtstart, "%Y-%m-%dT%H:%M:%S") {
+            // Assume UTC if no timezone specified
+            let dt = DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc);
+            return Some(dt.timestamp_micros());
+        }
+        
+        // Try parsing just date (YYYY-MM-DD)
+        if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(dtstart, "%Y-%m-%d") {
+            let naive_dt = naive_date.and_hms_opt(0, 0, 0)?;
+            let dt = DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc);
+            return Some(dt.timestamp_micros());
+        }
+        
+        None
+    }
     /// Retrieves event details by author ID and event ID, first trying Redis, then Neo4j
     pub async fn get_by_id(
         author_id: &str,
@@ -112,6 +142,12 @@ impl EventDetails {
             .as_ref()
             .and_then(|sd| serde_json::to_string(sd).ok());
 
+        // Parse dtstart to timestamp for efficient filtering/sorting
+        let dtstart_timestamp = Self::parse_dtstart_to_timestamp(
+            &homeserver_event.dtstart,
+            homeserver_event.dtstart_tzid.as_deref(),
+        );
+
         Ok(EventDetails {
             uri: event_uri_builder(author_id.to_string(), event_id.into()),
             id: event_id.clone(),
@@ -121,6 +157,7 @@ impl EventDetails {
             uid: homeserver_event.uid,
             dtstamp: homeserver_event.dtstamp,
             dtstart: homeserver_event.dtstart,
+            dtstart_timestamp,
             summary: homeserver_event.summary,
             // Optional fields
             dtend: homeserver_event.dtend,
@@ -189,8 +226,9 @@ impl EventDetails {
         author: Option<String>,
         timezone: Option<String>,
         rsvp_access: Option<String>,
+        tags: Option<Vec<String>>,
     ) -> Result<Vec<EventDetails>, DynError> {
-        let query = queries::get::stream_events(skip, limit, calendar, status, start_date, end_date, author, timezone, rsvp_access);
+        let query = queries::get::stream_events(skip, limit, calendar, status, start_date, end_date, author, timezone, rsvp_access, tags);
         let rows = crate::db::fetch_all_rows_from_graph(query).await?;
         let mut events = Vec::new();
 

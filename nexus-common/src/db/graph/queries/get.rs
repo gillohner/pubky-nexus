@@ -1012,27 +1012,27 @@ pub fn get_calendar_by_id(author_id: &str, calendar_id: &str) -> Query {
     query(
         "
             MATCH (u:User {id: $author_id})-[:AUTHORED]->(c:Calendar {id: $calendar_id})
-            OPTIONAL MATCH (admin:User)-[:ADMIN]->(c)
-            WITH u, c, COLLECT(DISTINCT admin.id) as relationship_admins
-            // Use relationship admins if available, otherwise extract user IDs from stored URIs
+            OPTIONAL MATCH (author:User)-[:CAN_AUTHOR]->(c)
+            WITH u, c, COLLECT(DISTINCT author.id) as relationship_authors
+            // Use relationship authors if available, otherwise extract user IDs from stored URIs
             // Stored URIs are like 'pubky://{user_id}/pub/pubky.app/profile.json'
-            WITH u, c, relationship_admins,
+            WITH u, c, relationship_authors,
                  CASE 
-                   WHEN c.x_pubky_admins IS NOT NULL THEN 
-                     [uri IN c.x_pubky_admins | 
+                   WHEN c.x_pubky_authors IS NOT NULL THEN 
+                     [uri IN c.x_pubky_authors | 
                        CASE 
                          WHEN uri STARTS WITH 'pubky://' THEN split(split(uri, 'pubky://')[1], '/')[0]
                          ELSE uri
                        END
                      ]
                    ELSE NULL 
-                 END as stored_admin_ids
+                 END as stored_author_ids
             WITH u, c,
                  CASE 
-                   WHEN SIZE(relationship_admins) > 0 THEN relationship_admins
-                   WHEN stored_admin_ids IS NOT NULL AND SIZE(stored_admin_ids) > 0 THEN stored_admin_ids
+                   WHEN SIZE(relationship_authors) > 0 THEN relationship_authors
+                   WHEN stored_author_ids IS NOT NULL AND SIZE(stored_author_ids) > 0 THEN stored_author_ids
                    ELSE NULL 
-                 END as admins
+                 END as authors
             RETURN {
                 uri: 'pubky://' + u.id + '/pub/eventky.app/calendars/' + c.id,
                 id: c.id,
@@ -1044,7 +1044,7 @@ pub fn get_calendar_by_id(author_id: &str, calendar_id: &str) -> Query {
                 description: c.description,
                 url: c.url,
                 image_uri: c.image_uri,
-                x_pubky_admins: admins,
+                x_pubky_authors: authors,
                 created: c.created,
                 sequence: c.sequence,
                 last_modified: c.last_modified
@@ -1168,15 +1168,15 @@ pub fn stream_calendars(
 
     // Add admin filter if specified - includes calendars where user is:
     // 1. The owner (author)
-    // 2. Has an ADMIN relationship to the calendar
-    // 3. Is in the stored x_pubky_admins property (as URI or plain ID)
+    // 2. Has a CAN_AUTHOR relationship to the calendar
+    // 3. Is in the stored x_pubky_authors property (as URI or plain ID)
     if admin.is_some() {
         where_clauses.push(
             "(u.id = $admin 
-             OR EXISTS((:User {id: $admin})-[:ADMIN]->(c))
-             OR (c.x_pubky_admins IS NOT NULL AND (
-                   $admin IN c.x_pubky_admins 
-                   OR ('pubky://' + $admin + '/pub/pubky.app/profile.json') IN c.x_pubky_admins
+             OR EXISTS((:User {id: $admin})-[:CAN_AUTHOR]->(c))
+             OR (c.x_pubky_authors IS NOT NULL AND (
+                   $admin IN c.x_pubky_authors 
+                   OR ('pubky://' + $admin + '/pub/pubky.app/profile.json') IN c.x_pubky_authors
                  )))".to_string()
         );
     }
@@ -1199,27 +1199,27 @@ pub fn stream_calendars(
 
     query_str.push_str(
         "
-        OPTIONAL MATCH (admin:User)-[:ADMIN]->(c)
-        WITH u, c, COLLECT(DISTINCT admin.id) as relationship_admins
+        OPTIONAL MATCH (author:User)-[:CAN_AUTHOR]->(c)
+        WITH u, c, COLLECT(DISTINCT author.id) as relationship_authors
         // Extract user IDs from stored URIs (pubky://{user_id}/pub/pubky.app/profile.json)
-        WITH u, c, relationship_admins,
+        WITH u, c, relationship_authors,
              CASE 
-               WHEN c.x_pubky_admins IS NOT NULL THEN 
-                 [uri IN c.x_pubky_admins | 
+               WHEN c.x_pubky_authors IS NOT NULL THEN 
+                 [uri IN c.x_pubky_authors | 
                    CASE 
                      WHEN uri STARTS WITH 'pubky://' THEN split(split(uri, 'pubky://')[1], '/')[0]
                      ELSE uri
                    END
                  ]
                ELSE NULL 
-             END as stored_admin_ids
-        // Use relationship admins if available, otherwise fall back to extracted IDs
+             END as stored_author_ids
+        // Use relationship authors if available, otherwise fall back to extracted IDs
         WITH u, c,
              CASE 
-               WHEN SIZE(relationship_admins) > 0 THEN relationship_admins
-               WHEN stored_admin_ids IS NOT NULL AND SIZE(stored_admin_ids) > 0 THEN stored_admin_ids
+               WHEN SIZE(relationship_authors) > 0 THEN relationship_authors
+               WHEN stored_author_ids IS NOT NULL AND SIZE(stored_author_ids) > 0 THEN stored_author_ids
                ELSE NULL 
-             END as admins
+             END as authors
         ORDER BY c.indexed_at DESC
         SKIP $skip
         LIMIT $limit
@@ -1234,7 +1234,7 @@ pub fn stream_calendars(
             description: c.description,
             url: c.url,
             image_uri: c.image_uri,
-            x_pubky_admins: admins,
+            x_pubky_authors: authors,
             created: c.created,
             sequence: c.sequence,
             last_modified: c.last_modified
@@ -1292,6 +1292,7 @@ pub fn stream_events(
     author: Option<String>,
     timezone: Option<String>,
     rsvp_access: Option<String>,
+    tags: Option<Vec<String>>,
 ) -> Query {
     let mut query_str = String::from(
         "
@@ -1304,7 +1305,17 @@ pub fn stream_events(
         query_str.push_str("MATCH (e)-[:BELONGS_TO]->(c:Calendar {id: $calendar}) ");
     }
 
+    // Add tags filter if specified - match events with at least one of the tags
+    if tags.is_some() {
+        query_str.push_str("MATCH (tagger:User)-[tag:TAGGED]->(e) ");
+    }
+
     let mut where_clauses = Vec::new();
+
+    // Add tags WHERE clause if specified
+    if tags.is_some() {
+        where_clauses.push("tag.label IN $tags".to_string());
+    }
 
     // Add status filter if specified
     if status.is_some() {
@@ -1326,6 +1337,21 @@ pub fn stream_events(
         where_clauses.push("e.x_pubky_rsvp_access = $rsvp_access".to_string());
     }
 
+    // Add date range filters
+    // For recurring events (rrule IS NOT NULL), include them regardless of dtstart_timestamp
+    // because they may have future occurrences even if the first occurrence was in the past
+    if start_date.is_some() {
+        where_clauses.push(
+            "(e.rrule IS NULL AND e.dtstart_timestamp >= $start_date) OR (e.rrule IS NOT NULL)".to_string()
+        );
+    }
+    
+    if end_date.is_some() {
+        where_clauses.push(
+            "(e.rrule IS NULL AND e.dtstart_timestamp <= $end_date) OR (e.rrule IS NOT NULL)".to_string()
+        );
+    }
+
     if !where_clauses.is_empty() {
         query_str.push_str("WHERE ");
         query_str.push_str(&where_clauses.join(" AND "));
@@ -1336,7 +1362,7 @@ pub fn stream_events(
         "
         OPTIONAL MATCH (e)-[:BELONGS_TO]->(c:Calendar)<-[:AUTHORED]-(cal_author:User)
         WITH u, e, COLLECT(DISTINCT 'pubky://' + cal_author.id + '/pub/eventky.app/calendars/' + c.id) as calendar_uris
-        ORDER BY e.indexed_at DESC
+        ORDER BY COALESCE(e.dtstart_timestamp, e.indexed_at) ASC
         SKIP $skip
         LIMIT $limit
         RETURN {
@@ -1347,6 +1373,7 @@ pub fn stream_events(
             uid: e.uid,
             dtstamp: e.dtstamp,
             dtstart: e.dtstart,
+            dtstart_timestamp: e.dtstart_timestamp,
             summary: e.summary,
             dtend: e.dtend,
             duration: e.duration,
@@ -1402,6 +1429,10 @@ pub fn stream_events(
 
     if let Some(end) = end_date {
         q = q.param("end_date", end);
+    }
+
+    if let Some(tag_list) = tags {
+        q = q.param("tags", tag_list);
     }
 
     q

@@ -50,6 +50,7 @@ mod key_republisher;
 pub mod mock;
 pub mod models;
 pub mod routes;
+pub mod utils;
 
 pub use builder::{NexusApi, NexusApiBuilder};
 pub use error::{Error, Result};

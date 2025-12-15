@@ -1,4 +1,5 @@
 use crate::routes::v0::endpoints::STREAM_EVENTS_ROUTE;
+use crate::utils::serde_helpers::deserialize_comma_separated;
 use crate::{Error, Result as AppResult};
 use axum::{extract::Query, Json};
 use nexus_common::models::event::EventDetails;
@@ -13,6 +14,7 @@ pub type EventStream = Vec<EventDetails>;
 pub struct EventStreamQuery {
     #[serde(flatten)]
     pub pagination: Pagination,
+    #[serde(default, deserialize_with = "deserialize_comma_separated")]
     pub tags: Option<Vec<String>>,
     pub calendar: Option<String>,
     pub start_date: Option<i64>,
@@ -70,7 +72,7 @@ pub async fn stream_events_handler(
         query.author, query.timezone, query.rsvp_access
     );
 
-    match EventDetails::stream(skip, limit, query.calendar, query.status, query.start_date, query.end_date, query.author, query.timezone, query.rsvp_access).await {
+    match EventDetails::stream(skip, limit, query.calendar, query.status, query.start_date, query.end_date, query.author, query.timezone, query.rsvp_access, query.tags).await {
         Ok(events) => Ok(Json(events)),
         Err(source) => Err(Error::InternalServerError { source }),
     }

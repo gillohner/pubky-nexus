@@ -401,8 +401,8 @@ pub fn create_homeserver(homeserver_id: &str) -> Query {
 // Calendar creation functions
 
 pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
-    // Store x_pubky_admins as native Neo4j list, not JSON string
-    let x_pubky_admins = calendar.x_pubky_admins.clone();
+    // Store x_pubky_authors as native Neo4j list, not JSON string
+    let x_pubky_authors = calendar.x_pubky_authors.clone();
 
     // Build cypher query with admin relationships
     let mut cypher = String::from(
@@ -416,23 +416,23 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
              c.description = $description,
              c.url = $url,
              c.image_uri = $image_uri,
-             c.x_pubky_admins = $x_pubky_admins,
+             c.x_pubky_authors = $x_pubky_authors,
              c.created = $created,
              c.sequence = $sequence,
              c.last_modified = $last_modified",
     );
 
-    // First, delete existing ADMIN relationships (so removed admins are cleaned up)
-    cypher.push_str("\nWITH c, existing_cal\nOPTIONAL MATCH (admin:User)-[r:ADMIN]->(c)\nDELETE r");
+    // First, delete existing CAN_AUTHOR relationships (so removed authors are cleaned up)
+    cypher.push_str("\nWITH c, existing_cal\nOPTIONAL MATCH (author:User)-[r:CAN_AUTHOR]->(c)\nDELETE r");
 
-    // Add ADMIN relationships for each admin user
+    // Add CAN_AUTHOR relationships for each author user (users who can add events to this calendar)
     // Use OPTIONAL MATCH + FOREACH to handle non-existent users gracefully
     // The MATCH would fail if the user doesn't exist, causing the whole query to fail
-    if let Some(admin_ids) = &calendar.x_pubky_admins {
-        for admin_id in admin_ids {
+    if let Some(author_ids) = &calendar.x_pubky_authors {
+        for author_id in author_ids {
             cypher.push_str(&format!(
-                "\nWITH c, existing_cal\nOPTIONAL MATCH (admin:User {{id: '{}'}})\nFOREACH (_ IN CASE WHEN admin IS NOT NULL THEN [1] ELSE [] END | MERGE (admin)-[:ADMIN {{indexed_at: $indexed_at}}]->(c))",
-                admin_id
+                "\nWITH c, existing_cal\nOPTIONAL MATCH (author:User {{id: '{}'}})\nFOREACH (_ IN CASE WHEN author IS NOT NULL THEN [1] ELSE [] END | MERGE (author)-[:CAN_AUTHOR {{indexed_at: $indexed_at}}]->(c))",
+                author_id
             ));
         }
     }
@@ -450,7 +450,7 @@ pub fn create_calendar(calendar: &CalendarDetails) -> Result<Query, DynError> {
     .param("description", calendar.description.clone())
     .param("url", calendar.url.clone())
     .param("image_uri", calendar.image_uri.clone())
-    .param("x_pubky_admins", x_pubky_admins)
+    .param("x_pubky_authors", x_pubky_authors)
     .param("created", calendar.created)
     .param("sequence", calendar.sequence)
     .param("last_modified", calendar.last_modified);
@@ -473,6 +473,7 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
              e.uid = $uid,
              e.dtstamp = $dtstamp,
              e.dtstart = $dtstart,
+             e.dtstart_timestamp = $dtstart_timestamp,
              e.summary = $summary,
              e.dtend = $dtend,
              e.duration = $duration,
@@ -524,6 +525,7 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
     .param("uid", event.uid.clone())
     .param("dtstamp", event.dtstamp)
     .param("dtstart", event.dtstart.clone())
+    .param("dtstart_timestamp", event.dtstart_timestamp)
     .param("summary", event.summary.clone())
     .param("dtend", event.dtend.clone())
     .param("duration", event.duration.clone())

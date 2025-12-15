@@ -1,4 +1,5 @@
 use crate::routes::v0::endpoints::{STREAM_POSTS_BY_IDS_ROUTE, STREAM_POSTS_ROUTE};
+use crate::utils::serde_helpers::deserialize_comma_separated;
 use crate::{Error, Result as AppResult};
 use axum::{extract::Query, Json};
 use nexus_common::db::kv::SortOrder;
@@ -8,7 +9,7 @@ use nexus_common::{
     types::Pagination,
 };
 use pubky_app_specs::PubkyAppPostKind;
-use serde::{de, Deserialize, Deserializer};
+use serde::Deserialize;
 use tracing::info;
 use utoipa::{OpenApi, ToSchema};
 
@@ -34,23 +35,6 @@ impl PostStreamQuery {
         self.pagination.limit = Some(self.pagination.limit.unwrap_or(10).min(30));
         self.sorting.get_or_insert(StreamSorting::Timeline);
     }
-}
-
-// Custom deserializer for comma-separated tags
-fn deserialize_comma_separated<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: Option<String> = Option::deserialize(deserializer)?;
-    if let Some(s) = s {
-        if s.is_empty() {
-            return Err(de::Error::custom("Tags cannot be empty"));
-        }
-        // Split by comma and trim any excess whitespace
-        let tags: Vec<String> = s.split(',').map(|tag| tag.trim().to_string()).collect();
-        return Ok(Some(tags));
-    }
-    Ok(None)
 }
 
 #[utoipa::path(
