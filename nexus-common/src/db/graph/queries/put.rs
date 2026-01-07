@@ -484,8 +484,8 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
              e.exdate = $exdate,
              e.description = $description,
              e.status = $status,
-             e.location = $location,
-             e.geo = $geo,
+             e.locations = $locations,
+             e.conferences = $conferences,
              e.url = $url,
              e.sequence = $sequence,
              e.last_modified = $last_modified,
@@ -518,6 +518,12 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
     // Return flag to indicate if this was an update or create
     cypher.push_str("\nRETURN existing_event IS NOT NULL AS flag");
 
+    // Serialize locations and conferences to JSON for Neo4j storage
+    let locations = event.locations.as_ref()
+        .and_then(|locs| serde_json::to_string(locs).ok());
+    let conferences = event.conferences.as_ref()
+        .and_then(|confs| serde_json::to_string(confs).ok());
+
     let query = query(&cypher)
     .param("author", event.author.clone())
     .param("id", event.id.clone())
@@ -536,8 +542,8 @@ pub fn create_event(event: &EventDetails) -> Result<Query, DynError> {
     .param("exdate", exdate)
     .param("description", event.description.clone())
     .param("status", event.status.clone())
-    .param("location", event.location.clone())
-    .param("geo", event.geo.clone())
+    .param("locations", locations)
+    .param("conferences", conferences)
     .param("url", event.url.clone())
     .param("sequence", event.sequence)
     .param("last_modified", event.last_modified)

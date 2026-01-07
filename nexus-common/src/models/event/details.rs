@@ -4,7 +4,7 @@ use crate::db::{
 };
 use crate::types::DynError;
 use chrono::Utc;
-use pubky_app_specs::{event_uri_builder, PubkyAppEvent, PubkyId};
+use pubky_app_specs::{event_uri_builder, EventConference, EventLocation, PubkyAppEvent, PubkyId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -34,8 +34,10 @@ pub struct EventDetails {
     pub exdate: Option<Vec<String>>,
     pub description: Option<String>,
     pub status: Option<String>,
-    pub location: Option<String>,
-    pub geo: Option<String>,
+    // RFC 9073 - Structured Locations (stored as JSON string)
+    pub locations: Option<String>,
+    // RFC 7986 - Virtual Conferences (stored as JSON string)
+    pub conferences: Option<String>,
     pub url: Option<String>,
     pub sequence: Option<i32>,
     pub last_modified: Option<i64>,
@@ -52,6 +54,18 @@ pub struct EventDetails {
 impl RedisOps for EventDetails {}
 
 impl EventDetails {
+    /// Deserialize locations from JSON string
+    pub fn get_locations(&self) -> Option<Vec<EventLocation>> {
+        self.locations.as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+    }
+    
+    /// Deserialize conferences from JSON string
+    pub fn get_conferences(&self) -> Option<Vec<EventConference>> {
+        self.conferences.as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+    }
+    
     /// Parse ISO 8601 datetime string to Unix microseconds
     /// Handles both timezone-aware and naive datetimes
     fn parse_dtstart_to_timestamp(dtstart: &str, _tzid: Option<&str>) -> Option<i64> {
@@ -142,6 +156,18 @@ impl EventDetails {
             .as_ref()
             .and_then(|sd| serde_json::to_string(sd).ok());
 
+        // Serialize locations to JSON string for storage
+        let locations = homeserver_event
+            .locations
+            .as_ref()
+            .and_then(|locs| serde_json::to_string(locs).ok());
+        
+        // Serialize conferences to JSON string for storage
+        let conferences = homeserver_event
+            .conferences
+            .as_ref()
+            .and_then(|confs| serde_json::to_string(confs).ok());
+
         // Parse dtstart to timestamp for efficient filtering/sorting
         let dtstart_timestamp = Self::parse_dtstart_to_timestamp(
             &homeserver_event.dtstart,
@@ -169,8 +195,10 @@ impl EventDetails {
             exdate: homeserver_event.exdate,
             description: homeserver_event.description,
             status: homeserver_event.status,
-            location: homeserver_event.location,
-            geo: homeserver_event.geo,
+            // RFC 9073 - Structured Locations (JSON string)
+            locations,
+            // RFC 7986 - Conferences (JSON string)
+            conferences,
             url: homeserver_event.url,
             sequence: homeserver_event.sequence,
             last_modified: homeserver_event.last_modified,
