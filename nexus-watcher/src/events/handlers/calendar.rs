@@ -1,4 +1,4 @@
-use crate::events::errors::EventProcessorError;
+use nexus_common::models::event::EventProcessorError;
 use crate::handle_indexing_results;
 use nexus_common::db::OperationOutcome;
 use nexus_common::models::calendar::CalendarDetails;
