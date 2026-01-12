@@ -1,5 +1,5 @@
-use crate::events::errors::EventProcessorError;
 use crate::events::retry::event::RetryEvent;
+use crate::events::EventProcessorError;
 use crate::handle_indexing_results;
 use chrono::Utc;
 use nexus_common::db::kv::{JsonAction, ScoreAction};
@@ -15,8 +15,8 @@ use nexus_common::models::tag::search::TagSearch;
 use nexus_common::models::tag::traits::{TagCollection, TaggersCollection};
 use nexus_common::models::tag::user::TagUser;
 use nexus_common::models::user::UserCounts;
-use nexus_common::types::DynError;
-use pubky_app_specs::{user_uri_builder, ParsedUri, PubkyAppTag, PubkyId, Resource};
+use nexus_common::types::{DynError, Pagination};
+use pubky_app_specs::{ParsedUri, PubkyAppTag, PubkyId, Resource};
 use tracing::debug;
 
 use super::utils::post_relationships_is_reply;
@@ -98,8 +98,10 @@ async fn put_sync_post(
         OperationOutcome::MissingDependency => {
             // Ensure that dependencies follow the same format as the RetryManager keys
             let dependency = vec![format!("{author_id}:posts:{post_id}")];
-            if let Err(e) = Homeserver::maybe_ingest_for_post(post_uri).await {
-                tracing::error!("Failed to ingest homeserver: {e}");
+            if let Ok(referenced_post_uri) = ParsedUri::try_from(post_uri) {
+                if let Err(e) = Homeserver::maybe_ingest_for_post(&referenced_post_uri).await {
+                    tracing::error!("Failed to ingest homeserver: {e}");
+                }
             }
             Err(EventProcessorError::MissingDependency { dependency }.into())
         }
@@ -212,17 +214,13 @@ async fn put_sync_user(
     {
         OperationOutcome::Updated => Ok(()),
         OperationOutcome::MissingDependency => {
-            match RetryEvent::generate_index_key(&user_uri_builder(tagged_user_id.to_string())) {
-                Some(key) => {
-                    let dependency = vec![key];
-                    if let Err(e) = Homeserver::maybe_ingest_for_user(tagged_user_id.as_str()).await
-                    {
-                        tracing::error!("Failed to ingest homeserver: {e}");
-                    }
-                    Err(EventProcessorError::MissingDependency { dependency }.into())
-                }
-                None => Err("Could not generate missing dependency key".into()),
+            if let Err(e) = Homeserver::maybe_ingest_for_user(tagged_user_id.as_str()).await {
+                tracing::error!("Failed to ingest homeserver: {e}");
             }
+
+            let key = RetryEvent::generate_index_key_from_uri(&tagged_user_id.to_uri());
+            let dependency = vec![key];
+            Err(EventProcessorError::MissingDependency { dependency }.into())
         }
         OperationOutcome::CreatedOrDeleted => {
             let tag_label_slice = &[tag_label.to_string()];
@@ -553,6 +551,15 @@ async fn del_sync_post(
             // NOTE: The tag search index, depends on the post taggers collection to delete
             // Delete post from global label timeline
             PostsByTagSearch::del_from_index(author_id, post_id, tag_label).await?;
+
+            let posts_by_tag =
+                PostsByTagSearch::get_by_label(tag_label, None, Pagination::default()).await?;
+            let posts_by_tag_found = posts_by_tag.is_some_and(|x| !x.is_empty());
+            if !posts_by_tag_found {
+                // If we just removed the last post using this tag, remove tag from autocomplete suggestion list
+                TagSearch::del_from_index(tag_label).await?;
+            }
+
             Ok::<(), DynError>(())
         }
     );

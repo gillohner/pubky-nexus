@@ -6,7 +6,7 @@ use axum::Json;
 use nexus_common::models::user::UserSearch;
 use nexus_common::types::Pagination;
 use serde::Deserialize;
-use tracing::info;
+use tracing::debug;
 use utoipa::OpenApi;
 
 #[derive(Deserialize)]
@@ -28,7 +28,6 @@ pub struct SearchQuery {
     responses(
         (status = 200, description = "Search results", body = UserSearch),
         (status = 400, description = "Invalid input"),
-        (status = 404, description = "No users found"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -41,16 +40,14 @@ pub async fn search_users_by_name_handler(
         return Err(Error::invalid_input("Username cannot be empty"));
     }
 
-    info!("GET {SEARCH_USERS_BY_NAME_ROUTE} username:{}", username);
+    debug!("GET {SEARCH_USERS_BY_NAME_ROUTE} username:{}", username);
 
     let skip = query.pagination.skip.unwrap_or(0);
     let limit = query.pagination.limit.unwrap_or(200);
 
     match UserSearch::get_by_name(&username, Some(skip), Some(limit)).await {
         Ok(Some(user_search)) => Ok(Json(user_search)),
-        Ok(None) => Err(Error::UserNotFound {
-            user_id: username.clone(),
-        }),
+        Ok(None) => Ok(Json(UserSearch::default())),
         Err(source) => Err(Error::InternalServerError { source }),
     }
 }
@@ -68,7 +65,6 @@ pub async fn search_users_by_name_handler(
     responses(
         (status = 200, description = "Search results", body = UserSearch),
         (status = 400, description = "Invalid input"),
-        (status = 404, description = "No users found"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -83,16 +79,14 @@ pub async fn search_users_by_id_handler(
         )));
     }
 
-    info!("GET {SEARCH_USERS_BY_ID_ROUTE} ID:{}", id_prefix);
+    debug!("GET {SEARCH_USERS_BY_ID_ROUTE} ID:{}", id_prefix);
 
     let skip = query.pagination.skip.unwrap_or(0);
     let limit = query.pagination.limit.unwrap_or(200);
 
     match UserSearch::get_by_id(&id_prefix, Some(skip), Some(limit)).await {
         Ok(Some(user_search)) => Ok(Json(user_search)),
-        Ok(None) => Err(Error::UserNotFound {
-            user_id: id_prefix.clone(),
-        }),
+        Ok(None) => Ok(Json(UserSearch::default())),
         Err(source) => Err(Error::InternalServerError { source }),
     }
 }

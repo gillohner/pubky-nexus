@@ -5,6 +5,7 @@ use crate::{
     event_processor::utils::watcher::WatcherTest,
 };
 use anyhow::Result;
+use nexus_common::models::event::Event;
 use nexus_common::{
     db::RedisOps,
     models::user::{UserCounts, UserSearch, USER_NAME_KEY_PARTS},
@@ -16,7 +17,7 @@ use pubky_app_specs::{file_uri_builder, PubkyAppUser, PubkyAppUserLink};
 async fn test_homeserver_user_put_event() -> Result<()> {
     let mut test = WatcherTest::setup().await?;
 
-    let keypair = Keypair::random();
+    let user_kp = Keypair::random();
 
     let user = PubkyAppUser {
         bio: Some("test_homeserver_user_event".to_string()),
@@ -31,8 +32,9 @@ async fn test_homeserver_user_put_event() -> Result<()> {
         name: "Watcher:UserEvent:User".to_string(),
         status: Some("Running Nexus Watcher".to_string()),
     };
+    let (_, events_in_redis_before) = Event::get_events_from_redis(None, 1000).await.unwrap();
 
-    let user_id = test.create_user(&keypair, &user).await?;
+    let user_id = test.create_user(&user_kp, &user).await?;
 
     // GRAPH_OP: Assert if the event writes the graph
     // Cannot use UserDetails::from_graph because it indexes also, Sorted:Users:Name and that
@@ -59,6 +61,9 @@ async fn test_homeserver_user_put_event() -> Result<()> {
 
     // CACHE_OP: Check if the event writes in the graph
     // User:Counts:user_id
+    let (_, events_in_redis_after) = Event::get_events_from_redis(None, 1000).await.unwrap();
+    assert!(events_in_redis_after > events_in_redis_before);
+
     let user_counts = UserCounts::get_from_index(&user_id)
         .await
         .unwrap()
@@ -91,7 +96,7 @@ async fn test_homeserver_user_put_event() -> Result<()> {
     assert_eq!(influencer_score.unwrap(), 0);
 
     // Cleanup
-    test.cleanup_user(&user_id).await?;
+    test.cleanup_user(&user_kp).await?;
 
     // Assert the new user does not exist in Nexus
     // let result = UserView::get_by_id(&user_id, None).await.unwrap();

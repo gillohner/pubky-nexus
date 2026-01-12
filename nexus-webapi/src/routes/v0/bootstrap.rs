@@ -10,20 +10,19 @@ use axum::Router;
 use nexus_common::models::bootstrap::{Bootstrap, ViewType};
 use nexus_common::models::homeserver::Homeserver;
 use pubky_app_specs::PubkyId;
-use tracing::info;
+use tracing::debug;
 use utoipa::OpenApi;
 
 #[utoipa::path(
     get,
     path = BOOTSTRAP_ROUTE,
-    description = "Initial payload for all data required to bootstrap the pubky.app application. The client app will request it while the user is performing sign-in in order to pre-populate the client DB",
+    description = "Initial payload for all data required to bootstrap the pubky.app application. The client app will request it while the user is performing sign-in/sign-up in order to pre-populate the client DB",
     tag = "Bootstrap",
     params(
         ("user_id" = String, Path, description = "User Pubky ID")
     ),
     responses(
         (status = 200, description = "Initial payload to bootstrap the client", body = Bootstrap),
-        (status = 404, description = "user_id requested for bootstrap payload not found"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -32,11 +31,10 @@ pub async fn bootstrap_handler(
     // TODO: Might need a param like "ViewType". There might be too much data to include in the first go, especially for mobile
     //Query(query): Query<Pub>,
 ) -> Result<Json<Bootstrap>> {
-    info!("GET {BOOTSTRAP_ROUTE}, user_id:{}", user_id);
+    debug!("GET {BOOTSTRAP_ROUTE}, user_id:{}", user_id);
 
     match Bootstrap::get_by_id(&user_id, ViewType::Full).await {
-        Ok(Some(result)) => Ok(Json(result)),
-        Ok(None) => Err(Error::UserNotFound { user_id }),
+        Ok(result) => Ok(Json(result)),
         Err(source) => Err(Error::InternalServerError { source }),
     }
 }
@@ -55,7 +53,7 @@ pub async fn bootstrap_handler(
     )
 )]
 pub async fn put_homeserver_handler(Path(user_id): Path<String>) -> Result<()> {
-    info!("PUT {PUT_HOMESERVER_ROUTE}, user_id:{user_id}");
+    debug!("PUT {PUT_HOMESERVER_ROUTE}, user_id:{user_id}");
 
     PubkyId::try_from(&user_id)
         .map_err(|e| Error::invalid_input(&format!("Invalid user PK: {e}")))?;

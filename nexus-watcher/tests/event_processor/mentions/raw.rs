@@ -10,7 +10,7 @@ async fn test_homeserver_mentions() -> Result<()> {
     let mut test = WatcherTest::setup().await?;
 
     // Create first user (author)
-    let author_user_keypair = Keypair::random();
+    let author_user_kp = Keypair::random();
 
     let author = PubkyAppUser {
         bio: Some("test_homeserver_mentions".to_string()),
@@ -19,10 +19,10 @@ async fn test_homeserver_mentions() -> Result<()> {
         name: "Watcher:Mentions:Author".to_string(),
         status: None,
     };
-    let author_user_id = test.create_user(&author_user_keypair, &author).await?;
+    let author_user_id = test.create_user(&author_user_kp, &author).await?;
 
     // Create second user (mention 1)
-    let mentioned_user_1_keypair = Keypair::random();
+    let mentioned_user_1_kp = Keypair::random();
 
     let mentioned_user_1 = PubkyAppUser {
         bio: Some("test_homeserver_mentions".to_string()),
@@ -32,11 +32,11 @@ async fn test_homeserver_mentions() -> Result<()> {
         status: None,
     };
     let mentioned_user_1_id = test
-        .create_user(&mentioned_user_1_keypair, &mentioned_user_1)
+        .create_user(&mentioned_user_1_kp, &mentioned_user_1)
         .await?;
 
     // Create third user (mention 2)
-    let mentioned_user_2_keypair = Keypair::random();
+    let mentioned_user_2_kp = Keypair::random();
 
     let mentioned_user_2 = PubkyAppUser {
         bio: Some("test_homeserver_mentions".to_string()),
@@ -46,7 +46,7 @@ async fn test_homeserver_mentions() -> Result<()> {
         status: None,
     };
     let mentioned_user_2_id = test
-        .create_user(&mentioned_user_2_keypair, &mentioned_user_2)
+        .create_user(&mentioned_user_2_kp, &mentioned_user_2)
         .await?;
 
     // User 1 writes a post mentioning User 2 and User 3
@@ -61,7 +61,7 @@ async fn test_homeserver_mentions() -> Result<()> {
         attachments: None,
     };
 
-    let post_id = test.create_post(&author_user_id, &post).await?;
+    let (post_id, post_path) = test.create_post(&author_user_kp, &post).await?;
 
     // GRAPH_OP
     let post_mention_users = find_post_mentions(&author_user_id, &post_id).await.unwrap();
@@ -83,7 +83,12 @@ async fn test_homeserver_mentions() -> Result<()> {
         post_relationships.is_some(),
         "Post should have relationships cached"
     );
-    let mentions = post_relationships.unwrap().mentioned;
+    let mentions: Vec<String> = post_relationships
+        .unwrap()
+        .mentioned
+        .iter()
+        .map(|pubky_id| pubky_id.to_string())
+        .collect();
     assert_eq!(mentions.len(), 2, "The post should have two mentions");
     assert!(
         mentions.contains(&mentioned_user_1_id),
@@ -95,10 +100,10 @@ async fn test_homeserver_mentions() -> Result<()> {
     );
 
     // Cleanup
-    test.cleanup_post(&author_user_id, &post_id).await?;
-    test.cleanup_user(&author_user_id).await?;
-    test.cleanup_user(&mentioned_user_1_id).await?;
-    test.cleanup_user(&mentioned_user_2_id).await?;
+    test.cleanup_post(&author_user_kp, &post_path).await?;
+    test.cleanup_user(&author_user_kp).await?;
+    test.cleanup_user(&mentioned_user_1_kp).await?;
+    test.cleanup_user(&mentioned_user_2_kp).await?;
 
     Ok(())
 }

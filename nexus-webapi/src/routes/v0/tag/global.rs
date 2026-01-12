@@ -9,7 +9,7 @@ use nexus_common::models::tag::Taggers as TaggersType;
 use nexus_common::types::routes::HotTagsInputDTO;
 use nexus_common::types::{Pagination, StreamReach, Timeframe};
 use serde::Deserialize;
-use tracing::{error, info};
+use tracing::{debug, error};
 use utoipa::OpenApi;
 
 #[derive(Deserialize, Debug)]
@@ -46,7 +46,6 @@ pub struct TagTaggersQuery {
     ),
     responses(
         (status = 200, description = "Taggers", body = TaggersType),
-        (status = 404, description = "Tag not found"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -54,7 +53,7 @@ pub async fn tag_taggers_handler(
     Path(label): Path<String>,
     Query(query): Query<TagTaggersQuery>,
 ) -> Result<Json<TaggersType>> {
-    info!(
+    debug!(
         "GET {TAG_TAGGERS_ROUTE} label:{}, query: {:?}",
         label, query
     );
@@ -81,7 +80,7 @@ pub async fn tag_taggers_handler(
     .await
     {
         Ok(Some(post)) => Ok(Json(post)),
-        Ok(None) => Err(Error::TagsNotFound { reach: label }),
+        Ok(None) => Ok(Json(vec![])),
         Err(source) => Err(Error::InternalServerError { source }),
     }
 }
@@ -101,12 +100,11 @@ pub async fn tag_taggers_handler(
     ),
     responses(
         (status = 200, description = "Retrieve tags by reach cluster", body = Vec<HotTag>),
-        (status = 404, description = "Hot tags not found"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn hot_tags_handler(Query(query): Query<HotTagsQuery>) -> Result<Json<HotTags>> {
-    info!("GET {TAGS_HOT_ROUTE}, query: {:?}", query);
+    debug!("GET {TAGS_HOT_ROUTE}, query: {:?}", query);
 
     // Check if user_id and reach are provided together
     if query.user_id.is_some() ^ query.reach.is_some() {
@@ -130,9 +128,7 @@ pub async fn hot_tags_handler(Query(query): Query<HotTagsQuery>) -> Result<Json<
 
     match HotTags::get_hot_tags(query.user_id, query.reach, &input).await {
         Ok(Some(hot_tags)) => Ok(Json(hot_tags)),
-        Ok(None) => Err(Error::EmptyStream {
-            message: String::from("No hot tags found for the given criteria"),
-        }),
+        Ok(None) => Ok(Json(HotTags::default())),
         Err(source) => {
             error!("Internal Server ERROR: {:?}", source);
             Err(Error::InternalServerError { source })
@@ -143,6 +139,6 @@ pub async fn hot_tags_handler(Query(query): Query<HotTagsQuery>) -> Result<Json<
 #[derive(OpenApi)]
 #[openapi(
     paths(hot_tags_handler, tag_taggers_handler),
-    components(schemas(HotTags, HotTag, Taggers))
+    components(schemas(HotTags, HotTag, Taggers, StreamReach, Timeframe))
 )]
 pub struct TagGlobalApiDoc;

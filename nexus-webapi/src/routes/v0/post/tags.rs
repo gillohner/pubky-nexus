@@ -7,7 +7,7 @@ use axum::Json;
 use nexus_common::models::tag::post::TagPost;
 use nexus_common::models::tag::traits::{TagCollection, TaggersCollection};
 use nexus_common::models::tag::TagDetails;
-use tracing::info;
+use tracing::debug;
 use utoipa::OpenApi;
 
 #[utoipa::path(
@@ -33,7 +33,7 @@ pub async fn post_tags_handler(
     Path((author_id, post_id)): Path<(String, String)>,
     Query(query): Query<TagsQuery>,
 ) -> Result<Json<Vec<TagDetails>>> {
-    info!(
+    debug!(
         "GET {POST_TAGS_ROUTE} author_id:{}, post_id: {}, skip_tags:{:?}, limit_tags:{:?}, limit_taggers:{:?}",
         author_id, post_id, query.limit_tags, query.skip_tags, query.limit_taggers
     );
@@ -69,7 +69,6 @@ pub async fn post_tags_handler(
     ),
     responses(
         (status = 200, description = "Post tags", body = TaggersInfoResponse),
-        (status = 404, description = "Post not found"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -77,7 +76,7 @@ pub async fn post_taggers_handler(
     Path((author_id, post_id, label)): Path<(String, String, String)>,
     Query(taggers_query): Query<TaggersQuery>,
 ) -> Result<Json<TaggersInfoResponse>> {
-    info!(
+    debug!(
         "GET {POST_TAGGERS_ROUTE} author_id:{}, post_id: {}, label: {}, viewer_id:{:?}, skip:{:?}, limit:{:?}",
         author_id, post_id, label, taggers_query.tags_query.viewer_id, taggers_query.pagination.skip, taggers_query.pagination.limit
     );
@@ -91,8 +90,7 @@ pub async fn post_taggers_handler(
     )
     .await
     {
-        Ok(Some(tags)) => Ok(Json(TaggersInfoResponse::from(tags))),
-        Ok(None) => Err(Error::PostNotFound { author_id, post_id }),
+        Ok(tags) => Ok(Json(TaggersInfoResponse::from(tags))),
         Err(source) => Err(Error::InternalServerError { source }),
     }
 }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use nexus_common::db::RedisOps;
 use nexus_common::types::DynError;
 
-use crate::events::errors::EventProcessorError;
+use crate::events::EventProcessorError;
 
 pub const RETRY_MANAGER_PREFIX: &str = "RetryManager";
 pub const RETRY_MANAGER_EVENTS_INDEX: [&str; 1] = ["events"];
@@ -55,6 +55,16 @@ impl RetryEvent {
         };
 
         Some(key)
+    }
+
+    pub fn generate_index_key_from_uri(event_uri: &ParsedUri) -> String {
+        let user_id = &event_uri.user_id;
+        let event_resource = &event_uri.resource;
+
+        match event_uri.resource.id() {
+            Some(id) => format!("{user_id}:{event_resource}:{id}"),
+            None => format!("{user_id}:{event_resource}"),
+        }
     }
 
     /// Stores an event in both a sorted set and a JSON index in Redis.

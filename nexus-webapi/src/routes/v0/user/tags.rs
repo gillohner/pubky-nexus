@@ -1,5 +1,4 @@
 use crate::routes::v0::endpoints::{USER_TAGGERS_ROUTE, USER_TAGS_ROUTE};
-use crate::routes::v0::utils::json_array_or_no_content;
 use crate::routes::v0::{TaggersInfoResponse, TagsQuery};
 use crate::{Error, Result};
 use axum::extract::{Path, Query};
@@ -9,7 +8,7 @@ use nexus_common::models::tag::user::TagUser;
 use nexus_common::models::tag::TagDetails;
 use nexus_common::types::Pagination;
 use serde::Deserialize;
-use tracing::info;
+use tracing::debug;
 use utoipa::OpenApi;
 
 #[utoipa::path(
@@ -26,8 +25,7 @@ use utoipa::OpenApi;
         ("depth" = Option<usize>, Query, description = "User trusted network depth, user following users distance. Numbers bigger than 4, will be ignored")
     ),
     responses(
-        (status = 200, description = "User tags", body = TagDetails),
-        (status = 204, description = "Tags not found"),
+        (status = 200, description = "User tags", body = Vec<TagDetails>),
         (status = 404, description = "User not found"),
         (status = 500, description = "Internal server error")
     )
@@ -36,7 +34,7 @@ pub async fn user_tags_handler(
     Path(user_id): Path<String>,
     Query(query): Query<TagsQuery>,
 ) -> Result<Json<Vec<TagDetails>>> {
-    info!(
+    debug!(
         "GET {USER_TAGS_ROUTE} user_id:{}, skip_tags:{:?}, limit_tags:{:?}, limit_taggers:{:?}, viewer_id:{:?}, depth:{:?}",
         user_id, query.skip_tags, query.limit_tags, query.limit_taggers, query.viewer_id, query.depth
     );
@@ -52,7 +50,7 @@ pub async fn user_tags_handler(
     )
     .await
     {
-        Ok(Some(tags)) => json_array_or_no_content(tags, "tags"),
+        Ok(Some(tags)) => Ok(Json(tags)),
         Ok(None) => Err(Error::UserNotFound { user_id }),
         Err(source) => Err(Error::InternalServerError { source }),
     }
@@ -81,7 +79,6 @@ pub struct TaggersQuery {
     ),
     responses(
         (status = 200, description = "User tags", body = TaggersInfoResponse),
-        (status = 404, description = "User not found"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -92,7 +89,7 @@ pub async fn user_taggers_handler(
         tags_query,
     }): Query<TaggersQuery>,
 ) -> Result<Json<TaggersInfoResponse>> {
-    info!(
+    debug!(
         "GET {USER_TAGGERS_ROUTE} user_id:{}, label: {}, skip:{:?}, limit:{:?}, viewer_id:{:?}, depth:{:?}",
         user_id, label, pagination.skip, pagination.limit, tags_query.viewer_id, tags_query.depth
     );
@@ -107,8 +104,7 @@ pub async fn user_taggers_handler(
     )
     .await
     {
-        Ok(Some(tags)) => Ok(Json(TaggersInfoResponse::from(tags))),
-        Ok(None) => Err(Error::UserNotFound { user_id }),
+        Ok(tags) => Ok(Json(TaggersInfoResponse::from(tags))),
         Err(source) => Err(Error::InternalServerError { source }),
     }
 }

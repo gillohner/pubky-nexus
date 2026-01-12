@@ -5,6 +5,7 @@ pub mod bootstrap;
 pub mod calendar;
 pub mod endpoints;
 pub mod event;
+pub mod events;
 pub mod file;
 pub mod info;
 pub mod notification;
@@ -14,7 +15,6 @@ pub mod stream;
 pub mod tag;
 mod types;
 pub mod user;
-pub mod utils;
 
 pub use types::{CalendarQuery, EventQuery, TaggersInfoResponse, TagsQuery};
 
@@ -32,6 +32,7 @@ pub fn routes(app_state: AppState) -> Router<AppState> {
     let route_bootstrap = bootstrap::routes();
     let route_calendar = calendar::routes();
     let route_event = event::routes();
+    let route_events = events::routes();
 
     routes_post
         .merge(routes_info)
@@ -44,6 +45,7 @@ pub fn routes(app_state: AppState) -> Router<AppState> {
         .merge(route_bootstrap)
         .merge(route_calendar)
         .merge(route_event)
+        .merge(route_events)
 }
 
 #[derive(OpenApi)]
@@ -64,6 +66,8 @@ impl ApiDoc {
         combined.merge(notification::NotificationApiDoc::merge_docs());
         combined.merge(calendar::CalendarApiDoc::merge_docs());
         combined.merge(event::EventApiDoc::merge_docs());
+        combined.merge(events::EventsApiDoc::openapi());
+
         combined
     }
 }

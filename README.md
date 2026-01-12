@@ -141,19 +141,20 @@ Use the `db` command to load the mock data
 cargo run -p nexusd -- db mock
 ```
 
-Then to run all tests:
+Then to run the tests:
 
 ```bash
-cargo nextest run
+cargo nextest run -p nexus-common --no-fail-fast
+cargo nextest run -p nexus-watcher --no-fail-fast
+
+# webapi tests need the Postgres Connection URL as env variable, adjust it as needed
+export TEST_PUBKY_CONNECTION_STRING=postgres://postgres:postgres@localhost:5432/postgres?pubky-test=true
+cargo nextest run -p nexus-webapi --no-fail-fast
 ```
 
-To test specific componenets or feature(s):
+To test specific feature(s):
 
 ```bash
-# component tests
-cargo nextest run -p nexus-watcher --no-fail-fast
-cargo nextest run -p nexus-webapi --no-fail-fast
-# features
 cargo nextest run -p nexus-watcher files::create --no-fail-fast
 ```
 
@@ -162,9 +163,10 @@ cargo nextest run -p nexus-watcher files::create --no-fail-fast
 If you want to see the performance of the server you can run the benchmarks
 
 ```bash
+# cargo bench -p nexus-webapi [--bench <endpoint>]
 cargo bench -p nexus-webapi
 # or if you want specific endpoint
-cargo bench --bench --bench user
+cargo bench -p nexus-webapi --bench user
 ```
 
 ## ⚠️ Troubleshooting

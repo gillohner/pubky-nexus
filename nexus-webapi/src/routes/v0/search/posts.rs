@@ -1,5 +1,4 @@
 use crate::routes::v0::endpoints::SEARCH_POSTS_BY_TAG_ROUTE;
-use crate::routes::v0::utils::json_array_or_no_content;
 use crate::{Error, Result};
 use axum::extract::{Path, Query};
 use axum::Json;
@@ -7,7 +6,7 @@ use nexus_common::models::post::search::PostsByTagSearch;
 use nexus_common::types::Pagination;
 use nexus_common::types::StreamSorting;
 use serde::Deserialize;
-use tracing::info;
+use tracing::debug;
 use utoipa::OpenApi;
 
 #[derive(Deserialize)]
@@ -32,7 +31,6 @@ pub struct SearchPostsQuery {
     ),
     responses(
         (status = 200, description = "Search results", body = Vec<PostsByTagSearch>),
-        (status = 404, description = "No posts with that tag found"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -44,7 +42,7 @@ pub async fn search_posts_by_tag_handler(
     let sorting = query.sorting;
     let mut pagination = query.pagination;
 
-    info!(
+    debug!(
         "GET {SEARCH_POSTS_BY_TAG_ROUTE} tag:{}, sort_by: {:?}, start: {:?}, end: {:?}, skip: {:?}, limit: {:?}",
         tag, sorting, pagination.start, pagination.end, pagination.skip, pagination.limit
     );
@@ -56,11 +54,8 @@ pub async fn search_posts_by_tag_handler(
     pagination.limit = Some(limit);
 
     match PostsByTagSearch::get_by_label(&tag, sorting, pagination).await {
-        Ok(Some(posts_list)) => json_array_or_no_content(posts_list, "posts"),
-        Ok(None) => Err(Error::PostNotFound {
-            author_id: String::from("global"),
-            post_id: String::from("N/A"),
-        }),
+        Ok(Some(posts_list)) => Ok(Json(posts_list)),
+        Ok(None) => Ok(Json(vec![])),
         Err(source) => Err(Error::InternalServerError { source }),
     }
 }

@@ -4,24 +4,26 @@ use crate::event_processor::posts::utils::{
     check_member_total_engagement_user_posts, find_post_counts,
 };
 use crate::event_processor::users::utils::find_user_counts;
-use crate::event_processor::utils::watcher::WatcherTest;
+use crate::event_processor::utils::watcher::{HomeserverHashIdPath, WatcherTest};
 use anyhow::Result;
 use chrono::Utc;
+use nexus_common::models::event::Event;
 use nexus_common::models::notification::Notification;
 use nexus_common::models::post::PostDetails;
 use nexus_common::models::tag::post::TagPost;
+use nexus_common::models::tag::search::TagSearch;
 use nexus_common::models::tag::traits::TagCollection;
-use nexus_common::types::Pagination;
+use nexus_common::types::{DynError, Pagination};
 use pubky::Keypair;
-use pubky_app_specs::{post_uri_builder, tag_uri_builder};
-use pubky_app_specs::{traits::HashId, PubkyAppPost, PubkyAppTag, PubkyAppUser};
+use pubky_app_specs::post_uri_builder;
+use pubky_app_specs::{PubkyAppPost, PubkyAppTag, PubkyAppUser};
 
 #[tokio_shared_rt::test(shared)]
 async fn test_homeserver_put_tag_post() -> Result<()> {
     let mut test = WatcherTest::setup().await?;
 
     // Step 1: Create a user
-    let keypair = Keypair::random();
+    let user_kp = Keypair::random();
 
     let tagger = PubkyAppUser {
         bio: Some("test_homeserver_put_tag_post".to_string()),
@@ -30,7 +32,7 @@ async fn test_homeserver_put_tag_post() -> Result<()> {
         name: "Watcher:PutTagPost:User".to_string(),
         status: None,
     };
-    let tagger_user_id = test.create_user(&keypair, &tagger).await?;
+    let tagger_user_id = test.create_user(&user_kp, &tagger).await?;
 
     // Step 2: Create a post under that user
     let post = PubkyAppPost {
@@ -40,7 +42,7 @@ async fn test_homeserver_put_tag_post() -> Result<()> {
         embed: None,
         attachments: None,
     };
-    let post_id = test.create_post(&tagger_user_id, &post).await?;
+    let (post_id, post_path) = test.create_post(&user_kp, &post).await?;
 
     // Step 3: Tagger user adds a tag to the his own post
     let label = "merkle_tree";
@@ -50,10 +52,11 @@ async fn test_homeserver_put_tag_post() -> Result<()> {
         label: label.to_string(),
         created_at: Utc::now().timestamp_millis(),
     };
-    let tag_url = tag_uri_builder(tagger_user_id.clone(), tag.create_id());
+    let tag_path = tag.hs_path();
 
+    let (_, events_in_redis_before) = Event::get_events_from_redis(None, 1000).await.unwrap();
     // Put tag
-    test.put(&tag_url, tag).await?;
+    test.put(&user_kp, &tag_path, tag).await?;
 
     // Step 4: Verify tag existence and data consistency
 
@@ -68,6 +71,8 @@ async fn test_homeserver_put_tag_post() -> Result<()> {
     assert_eq!(post_tag.taggers[0], tagger_user_id);
 
     // CACHE_OP: Check if the tag is correctly cached
+    let (_, events_in_redis_after) = Event::get_events_from_redis(None, 1000).await.unwrap();
+    assert!(events_in_redis_after > events_in_redis_before);
     let cache_post_tag = TagPost::get_from_index(
         &tagger_user_id,
         Some(&post_id),
@@ -148,18 +153,18 @@ async fn test_homeserver_put_tag_post() -> Result<()> {
     );
 
     // Cleanup user and post
-    test.cleanup_post(&tagger_user_id, &post_id).await?;
-    test.cleanup_user(&tagger_user_id).await?;
+    test.cleanup_post(&user_kp, &post_path).await?;
+    test.cleanup_user(&user_kp).await?;
 
     Ok(())
 }
 
 #[tokio_shared_rt::test(shared)]
-async fn test_homeserver_put_tag_post_unique_count() -> Result<()> {
+async fn test_homeserver_put_tag_post_unique_count() -> Result<(), DynError> {
     let mut test = WatcherTest::setup().await?;
 
     // Create a user
-    let keypair = Keypair::random();
+    let tagger_kp = Keypair::random();
     let tagger = PubkyAppUser {
         bio: Some("test_homeserver_put_tag_post_unique_count".to_string()),
         image: None,
@@ -167,7 +172,7 @@ async fn test_homeserver_put_tag_post_unique_count() -> Result<()> {
         name: "Watcher:PutUniqueTag:Post".to_string(),
         status: None,
     };
-    let tagger_user_id = test.create_user(&keypair, &tagger).await?;
+    let tagger_user_id = test.create_user(&tagger_kp, &tagger).await?;
 
     // Create a post under that user
     let post = PubkyAppPost {
@@ -177,7 +182,7 @@ async fn test_homeserver_put_tag_post_unique_count() -> Result<()> {
         embed: None,
         attachments: None,
     };
-    let post_id = test.create_post(&tagger_user_id, &post).await?;
+    let (post_id, post_path) = test.create_post(&tagger_kp, &post).await?;
 
     let label = "tag-183";
     let tag = PubkyAppTag {
@@ -185,31 +190,35 @@ async fn test_homeserver_put_tag_post_unique_count() -> Result<()> {
         label: label.to_string(),
         created_at: Utc::now().timestamp_millis(),
     };
-    let tag_url = tag_uri_builder(tagger_user_id.clone(), tag.create_id());
+    let tag_path = tag.hs_path();
 
     // Step 1: Put tag (tag post)
-    test.put(&tag_url, tag.clone()).await?;
+    test.put(&tagger_kp, &tag_path, tag.clone()).await?;
 
     let post_counts_after_step_1 = find_post_counts(&tagger_user_id, &post_id).await;
     assert_eq!(post_counts_after_step_1.tags, 1);
     assert_eq!(post_counts_after_step_1.unique_tags, 1);
 
     // Step 2: Remove tag
-    test.del(&tag_url).await?;
+    test.del(&tagger_kp, &tag_path).await?;
 
     let post_counts_after_step_2 = find_post_counts(&tagger_user_id, &post_id).await;
     assert_eq!(post_counts_after_step_2.tags, 0);
     assert_eq!(post_counts_after_step_2.unique_tags, 0);
 
+    let tag_suggestions = TagSearch::get_by_label(label, &Pagination::default()).await?;
+    let tag_suggestions_found = tag_suggestions.is_some_and(|x| !x.is_empty());
+    assert!(!tag_suggestions_found);
+
     // Step 3: Re-add tag
-    test.put(&tag_url, tag).await?;
+    test.put(&tagger_kp, &tag_path, tag).await?;
 
     let post_counts_after_step_3 = find_post_counts(&tagger_user_id, &post_id).await;
     assert_eq!(post_counts_after_step_3.tags, 1);
     assert_eq!(post_counts_after_step_3.unique_tags, 1);
 
-    test.cleanup_post(&tagger_user_id, &post_id).await?;
-    test.cleanup_user(&tagger_user_id).await?;
+    test.cleanup_post(&tagger_kp, &post_path).await?;
+    test.cleanup_user(&tagger_kp).await?;
 
     Ok(())
 }
@@ -219,7 +228,7 @@ async fn test_homeserver_put_tag_user_unique_count() -> Result<()> {
     let mut test = WatcherTest::setup().await?;
 
     // Create a user
-    let keypair = Keypair::random();
+    let tagger_kp = Keypair::random();
     let tagger = PubkyAppUser {
         bio: Some("test_homeserver_put_user_post_unique_count".to_string()),
         image: None,
@@ -227,7 +236,7 @@ async fn test_homeserver_put_tag_user_unique_count() -> Result<()> {
         name: "Watcher:PutUniqueTag:User".to_string(),
         status: None,
     };
-    let tagger_user_id = test.create_user(&keypair, &tagger).await?;
+    let tagger_user_id = test.create_user(&tagger_kp, &tagger).await?;
 
     let label = "tag-237";
     let tag = PubkyAppTag {
@@ -235,30 +244,30 @@ async fn test_homeserver_put_tag_user_unique_count() -> Result<()> {
         label: label.to_string(),
         created_at: Utc::now().timestamp_millis(),
     };
-    let tag_url = tag_uri_builder(tagger_user_id.clone(), tag.create_id());
+    let tag_path = tag.hs_path();
 
     // Step 1: Put tag (tag user)
-    test.put(&tag_url, tag.clone()).await?;
+    test.put(&tagger_kp, &tag_path, tag.clone()).await?;
 
     let user_counts_after_step_1 = find_user_counts(&tagger_user_id).await;
     assert_eq!(user_counts_after_step_1.tags, 1);
     assert_eq!(user_counts_after_step_1.unique_tags, 1);
 
     // Step 2: Remove tag
-    test.del(&tag_url).await?;
+    test.del(&tagger_kp, &tag_path).await?;
 
     let user_counts_after_step_2 = find_user_counts(&tagger_user_id).await;
     assert_eq!(user_counts_after_step_2.tags, 0);
     assert_eq!(user_counts_after_step_2.unique_tags, 0);
 
     // Step 3: Re-add tag
-    test.put(&tag_url, tag).await?;
+    test.put(&tagger_kp, &tag_path, tag).await?;
 
     let user_counts_after_step_3 = find_user_counts(&tagger_user_id).await;
     assert_eq!(user_counts_after_step_3.tags, 1);
     assert_eq!(user_counts_after_step_3.unique_tags, 1);
 
-    test.cleanup_user(&tagger_user_id).await?;
+    test.cleanup_user(&tagger_kp).await?;
 
     Ok(())
 }
