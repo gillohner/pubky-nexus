@@ -1270,7 +1270,7 @@ pub fn stream_calendars(
 
 /// Get event URIs belonging to a calendar
 /// Returns all events that have a BELONGS_TO relationship with the calendar
-/// AND whose author is still authorized (either has CAN_AUTHOR relationship or is in x_pubky_authors)
+/// AND whose author is still authorized (calendar owner, has CAN_AUTHOR relationship, or is in x_pubky_authors)
 pub fn get_calendar_event_uris(author_id: &str, calendar_id: &str, limit: Option<usize>) -> Query {
     let limit_val = limit.unwrap_or(100) as i64;
     
@@ -1279,8 +1279,12 @@ pub fn get_calendar_event_uris(author_id: &str, calendar_id: &str, limit: Option
         MATCH (cal_author:User {id: $author_id})-[:AUTHORED]->(c:Calendar {id: $calendar_id})
         MATCH (e:Event)-[:BELONGS_TO]->(c)
         MATCH (event_author:User)-[:AUTHORED]->(e)
-        // Only include events where the event author is still authorized
-        WHERE (event_author)-[:CAN_AUTHOR]->(c) 
+        // Only include events where the event author is still authorized:
+        // 1. Event author is the calendar owner
+        // 2. Event author has CAN_AUTHOR relationship
+        // 3. Event author is in x_pubky_authors list
+        WHERE event_author.id = cal_author.id
+           OR (event_author)-[:CAN_AUTHOR]->(c) 
            OR (c.x_pubky_authors IS NOT NULL AND (
                  event_author.id IN c.x_pubky_authors 
                  OR ('pubky://' + event_author.id) IN [uri IN c.x_pubky_authors | 
