@@ -1358,16 +1358,17 @@ pub fn stream_events(
 
     // Add date range filters
     // For recurring events (rrule IS NOT NULL), include them regardless of dtstart_timestamp
-    // because they may have future occurrences even if the first occurrence was in the past
+    // because they may have future occurrences even if the first occurrence was in the past.
+    // Outer parens are critical — without them, AND/OR precedence breaks the WHERE chain.
     if start_date.is_some() {
         where_clauses.push(
-            "(e.rrule IS NULL AND e.dtstart_timestamp >= $start_date) OR (e.rrule IS NOT NULL)".to_string()
+            "((e.rrule IS NULL AND e.dtstart_timestamp >= $start_date) OR e.rrule IS NOT NULL)".to_string()
         );
     }
-    
+
     if end_date.is_some() {
         where_clauses.push(
-            "(e.rrule IS NULL AND e.dtstart_timestamp <= $end_date) OR (e.rrule IS NOT NULL)".to_string()
+            "((e.rrule IS NULL AND e.dtstart_timestamp <= $end_date) OR e.rrule IS NOT NULL)".to_string()
         );
     }
 
