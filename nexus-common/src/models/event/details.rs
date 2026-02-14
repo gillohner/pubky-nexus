@@ -8,6 +8,21 @@ use pubky_app_specs::{event_uri_builder, PubkyAppEvent, PubkyId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Tag info included in stream responses (label + count only, no tagger IDs)
+#[derive(Serialize, Deserialize, ToSchema, Default, Debug, Clone)]
+pub struct StreamTagInfo {
+    pub label: String,
+    pub taggers_count: i64,
+}
+
+/// Event stream item: event details + inline tags from the stream query
+#[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
+pub struct EventStreamItem {
+    #[serde(flatten)]
+    pub details: EventDetails,
+    pub tags: Vec<StreamTagInfo>,
+}
+
 /// Represents event data with simplified RFC 5545/7986/9073 fields
 #[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
 pub struct EventDetails {
@@ -224,7 +239,7 @@ impl EventDetails {
         Ok(())
     }
 
-    /// Stream events with optional filtering
+    /// Stream events with optional filtering, including inline tags
     pub async fn stream(
         skip: usize,
         limit: usize,
@@ -232,18 +247,20 @@ impl EventDetails {
         status: Option<String>,
         start_date: Option<i64>,
         end_date: Option<i64>,
-        author: Option<String>,
-        timezone: Option<String>,
-        rsvp_access: Option<String>,
+        authors: Option<Vec<String>>,
         tags: Option<Vec<String>>,
-    ) -> Result<Vec<EventDetails>, DynError> {
-        let query = queries::get::stream_events(skip, limit, calendar, status, start_date, end_date, author, timezone, rsvp_access, tags);
+    ) -> Result<Vec<EventStreamItem>, DynError> {
+        let query = queries::get::stream_events(skip, limit, calendar, status, start_date, end_date, authors, tags);
         let rows = crate::db::fetch_all_rows_from_graph(query).await?;
         let mut events = Vec::new();
 
         for row in rows {
             let event: EventDetails = row.get("event")?;
-            events.push(event);
+            let event_tags: Vec<StreamTagInfo> = row.get("tags").unwrap_or_default();
+            events.push(EventStreamItem {
+                details: event,
+                tags: event_tags,
+            });
         }
 
         Ok(events)

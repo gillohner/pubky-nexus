@@ -4,6 +4,8 @@ pub mod view;
 // pub mod stream; // Will be added when implementing stream endpoints
 
 pub use details::EventDetails;
+pub use details::EventStreamItem;
+pub use details::StreamTagInfo;
 pub use view::EventView;
 
 // Homeserver event processor (change feed)
