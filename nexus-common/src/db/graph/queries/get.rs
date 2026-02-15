@@ -1162,7 +1162,6 @@ pub fn stream_calendars(
     limit: usize,
     admin: Option<String>,
     author: Option<String>,
-    timezone: Option<String>,
 ) -> Query {
     let mut query_str = String::from(
         "
@@ -1178,10 +1177,10 @@ pub fn stream_calendars(
     // 3. Is in the stored x_pubky_authors property (as URI or plain ID)
     if admin.is_some() {
         where_clauses.push(
-            "(u.id = $admin 
+            "(u.id = $admin
              OR EXISTS((:User {id: $admin})-[:CAN_AUTHOR]->(c))
              OR (c.x_pubky_authors IS NOT NULL AND (
-                   $admin IN c.x_pubky_authors 
+                   $admin IN c.x_pubky_authors
                    OR ('pubky://' + $admin + '/pub/pubky.app/profile.json') IN c.x_pubky_authors
                  )))".to_string()
         );
@@ -1192,11 +1191,6 @@ pub fn stream_calendars(
         where_clauses.push("u.id = $author".to_string());
     }
 
-    // Add timezone filter if specified
-    if timezone.is_some() {
-        where_clauses.push("c.timezone = $timezone".to_string());
-    }
-
     if !where_clauses.is_empty() {
         query_str.push_str("WHERE ");
         query_str.push_str(&where_clauses.join(" AND "));
@@ -1205,27 +1199,34 @@ pub fn stream_calendars(
 
     query_str.push_str(
         "
-        OPTIONAL MATCH (author:User)-[:CAN_AUTHOR]->(c)
-        WITH u, c, COLLECT(DISTINCT author.id) as relationship_authors
+        OPTIONAL MATCH (ca:User)-[:CAN_AUTHOR]->(c)
+        WITH u, c, COLLECT(DISTINCT ca.id) as relationship_authors
         // Extract user IDs from stored URIs (pubky://{user_id}/pub/pubky.app/profile.json)
         WITH u, c, relationship_authors,
-             CASE 
-               WHEN c.x_pubky_authors IS NOT NULL THEN 
-                 [uri IN c.x_pubky_authors | 
-                   CASE 
+             CASE
+               WHEN c.x_pubky_authors IS NOT NULL THEN
+                 [uri IN c.x_pubky_authors |
+                   CASE
                      WHEN uri STARTS WITH 'pubky://' THEN split(split(uri, 'pubky://')[1], '/')[0]
                      ELSE uri
                    END
                  ]
-               ELSE NULL 
+               ELSE NULL
              END as stored_author_ids
         // Use relationship authors if available, otherwise fall back to extracted IDs
         WITH u, c,
-             CASE 
+             CASE
                WHEN SIZE(relationship_authors) > 0 THEN relationship_authors
                WHEN stored_author_ids IS NOT NULL AND SIZE(stored_author_ids) > 0 THEN stored_author_ids
-               ELSE NULL 
+               ELSE NULL
              END as authors
+        CALL {
+            WITH c
+            OPTIONAL MATCH (tg:User)-[ct:TAGGED]->(c)
+            WITH ct.label AS label, COUNT(DISTINCT tg) AS cnt
+            WHERE label IS NOT NULL
+            RETURN COLLECT({label: label, taggers_count: cnt}) AS calendar_tags
+        }
         ORDER BY c.indexed_at DESC
         SKIP $skip
         LIMIT $limit
@@ -1244,7 +1245,7 @@ pub fn stream_calendars(
             created: c.created,
             sequence: c.sequence,
             last_modified: c.last_modified
-        } as calendar
+        } as calendar, calendar_tags as tags
         "
     );
 
@@ -1258,10 +1259,6 @@ pub fn stream_calendars(
 
     if let Some(author_id) = author {
         q = q.param("author", author_id);
-    }
-
-    if let Some(tz) = timezone {
-        q = q.param("timezone", tz);
     }
 
     q
@@ -1308,9 +1305,7 @@ pub fn stream_events(
     status: Option<String>,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    author: Option<String>,
-    timezone: Option<String>,
-    rsvp_access: Option<String>,
+    authors: Option<Vec<String>>,
     tags: Option<Vec<String>>,
 ) -> Query {
     let mut query_str = String::from(
@@ -1341,19 +1336,9 @@ pub fn stream_events(
         where_clauses.push("e.status = $status".to_string());
     }
 
-    // Add author filter if specified
-    if author.is_some() {
-        where_clauses.push("u.id = $author".to_string());
-    }
-
-    // Add timezone filter if specified
-    if timezone.is_some() {
-        where_clauses.push("e.dtstart_tzid = $timezone".to_string());
-    }
-
-    // Add RSVP access filter if specified
-    if rsvp_access.is_some() {
-        where_clauses.push("e.x_pubky_rsvp_access = $rsvp_access".to_string());
+    // Add authors filter if specified (supports multiple authors)
+    if authors.is_some() {
+        where_clauses.push("u.id IN $authors".to_string());
     }
 
     // Add date range filters
@@ -1380,8 +1365,15 @@ pub fn stream_events(
 
     query_str.push_str(
         "
-        OPTIONAL MATCH (e)-[:BELONGS_TO]->(c:Calendar)<-[:AUTHORED]-(cal_author:User)
-        WITH u, e, COLLECT(DISTINCT 'pubky://' + cal_author.id + '/pub/eventky.app/calendars/' + c.id) as calendar_uris
+        OPTIONAL MATCH (e)-[:BELONGS_TO]->(cal:Calendar)<-[:AUTHORED]-(cal_author:User)
+        WITH u, e, COLLECT(DISTINCT 'pubky://' + cal_author.id + '/pub/eventky.app/calendars/' + cal.id) as calendar_uris
+        CALL {
+            WITH e
+            OPTIONAL MATCH (tg:User)-[et:TAGGED]->(e)
+            WITH et.label AS label, COUNT(DISTINCT tg) AS cnt
+            WHERE label IS NOT NULL
+            RETURN COLLECT({label: label, taggers_count: cnt}) AS event_tags
+        }
         ORDER BY COALESCE(e.dtstart_timestamp, e.indexed_at) ASC
         SKIP $skip
         LIMIT $limit
@@ -1414,7 +1406,7 @@ pub fn stream_events(
             styled_description: e.styled_description,
             x_pubky_calendar_uris: CASE WHEN SIZE(calendar_uris) > 0 THEN calendar_uris ELSE NULL END,
             x_pubky_rsvp_access: e.x_pubky_rsvp_access
-        } as event
+        } as event, event_tags as tags
         "
     );
 
@@ -1430,16 +1422,8 @@ pub fn stream_events(
         q = q.param("status", event_status);
     }
 
-    if let Some(author_id) = author {
-        q = q.param("author", author_id);
-    }
-
-    if let Some(tz) = timezone {
-        q = q.param("timezone", tz);
-    }
-
-    if let Some(access) = rsvp_access {
-        q = q.param("rsvp_access", access);
+    if let Some(author_ids) = authors {
+        q = q.param("authors", author_ids);
     }
 
     if let Some(start) = start_date {

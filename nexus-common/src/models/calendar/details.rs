@@ -5,8 +5,17 @@ use crate::db::{
 use crate::types::DynError;
 use chrono::Utc;
 use pubky_app_specs::{calendar_uri_builder, PubkyAppCalendar, PubkyId};
+use crate::models::event::StreamTagInfo;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+/// Calendar stream item: calendar details + inline tags from the stream query
+#[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
+pub struct CalendarStreamItem {
+    #[serde(flatten)]
+    pub details: CalendarDetails,
+    pub tags: Vec<StreamTagInfo>,
+}
 
 /// Represents calendar data with name, timezone, color and metadata
 #[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
@@ -142,21 +151,24 @@ impl CalendarDetails {
         Ok(())
     }
 
-    /// Stream calendars with optional filtering
+    /// Stream calendars with optional filtering, including inline tags
     pub async fn stream(
         skip: usize,
         limit: usize,
         admin: Option<String>,
         author: Option<String>,
-        timezone: Option<String>,
-    ) -> Result<Vec<CalendarDetails>, DynError> {
-        let query = queries::get::stream_calendars(skip, limit, admin, author, timezone);
+    ) -> Result<Vec<CalendarStreamItem>, DynError> {
+        let query = queries::get::stream_calendars(skip, limit, admin, author);
         let rows = crate::db::fetch_all_rows_from_graph(query).await?;
         let mut calendars = Vec::new();
 
         for row in rows {
             let calendar: CalendarDetails = row.get("calendar")?;
-            calendars.push(calendar);
+            let calendar_tags: Vec<StreamTagInfo> = row.get("tags").unwrap_or_default();
+            calendars.push(CalendarStreamItem {
+                details: calendar,
+                tags: calendar_tags,
+            });
         }
 
         Ok(calendars)
