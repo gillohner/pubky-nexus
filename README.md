@@ -34,6 +34,40 @@ Nexus is composed of several core components:
 - **nexus-common**: A library crate containing common functionalities shared by `service` and `watcher`, including database connectors, models, and queries.
 - **nexusd**: Manages the execution of Nexus components, with the capability to perform database migrations and reindexing when required
 
+### Plugin System
+
+Nexus supports domain-specific plugins that extend the core social graph with additional data models, event handlers, and API routes — without forking the core codebase.
+
+Plugins implement the `NexusPlugin` trait from `nexus-common`:
+
+```rust
+#[async_trait]
+pub trait NexusPlugin: Send + Sync {
+    fn manifest(&self) -> PluginManifest;          // name + path namespace
+    async fn handle_put(&self, ...) -> Result<()>; // PUT event handler
+    async fn handle_del(&self, ...) -> Result<()>; // DEL event handler
+    fn routes(&self, ctx: PluginContext) -> Router; // Axum API routes
+    async fn setup_schema(&self, ...) -> Result<()>; // Neo4j constraints/indexes
+    fn openapi_docs(&self) -> Option<OpenApi> { None } // optional Swagger doc
+}
+```
+
+The event dispatcher intercepts homeserver events whose URI path matches the plugin's declared namespace (e.g. `/pub/mapky.app/`) _before_ `pubky-app-specs` parses them, so core social parsing never sees domain-specific paths. Multiple plugins can be registered; more specific namespaces always take priority.
+
+Plugins are compiled in via Cargo feature flags so a stock `nexusd` build has no external dependencies:
+
+```bash
+# Standard build — no domain plugins
+cargo run -p nexusd
+
+# With the Mapky geo-social plugin
+cargo run -p nexusd --features mapky
+```
+
+Each plugin's API routes are mounted at `/v0/{name}/` and its OpenAPI doc (if provided) appears at `/api-docs/{name}/openapi.json`.
+
+**Example plugin:** [mapky-nexus-plugin](https://github.com/pubky/mapky) — indexes place reviews, location tags, and geo-social content from the MapKy app onto the shared Neo4j graph.
+
 ### Data Flow
 
 ![pubky-nexus-arch](docs/images/pubky-nexus-arch.png)
