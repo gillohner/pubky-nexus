@@ -52,10 +52,7 @@ impl DaemonLauncher {
         #[cfg(feature = "mapky")]
         {
             let mapky: Arc<MapkyPlugin> = Arc::new(MapkyPlugin::new());
-            let mapky_ctx = PluginContext {
-                redis_prefix: "mapky".to_string(),
-            };
-            extra_routes = extra_routes.nest("/v0/mapky", mapky.routes(mapky_ctx));
+            extra_routes = extra_routes.nest("/v0/mapky", mapky.routes(PluginContext::for_plugin(mapky.as_ref())));
             plugins.push(mapky);
         }
 

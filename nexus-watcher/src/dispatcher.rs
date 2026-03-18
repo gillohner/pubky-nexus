@@ -71,9 +71,7 @@ impl EventDispatcher {
                 }
             };
 
-            let ctx = PluginContext {
-                redis_prefix: manifest.name.to_string(),
-            };
+            let ctx = PluginContext::for_plugin(plugin.as_ref());
 
             match event_type {
                 "PUT" => {

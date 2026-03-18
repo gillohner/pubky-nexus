@@ -108,10 +108,7 @@ impl NexusWatcherBuilder {
 
         // Setup Neo4j schema for each registered plugin (idempotent)
         for plugin in &self.plugins {
-            let ctx = PluginContext {
-                redis_prefix: plugin.manifest().name.to_string(),
-            };
-            plugin.setup_schema(&ctx).await?;
+            plugin.setup_schema(&PluginContext::for_plugin(plugin.as_ref())).await?;
         }
 
         let dispatcher = if self.plugins.is_empty() {

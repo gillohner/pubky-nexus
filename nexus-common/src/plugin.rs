@@ -19,6 +19,16 @@ pub struct PluginContext {
     pub redis_prefix: String,
 }
 
+impl PluginContext {
+    /// Build the standard context for a plugin from its manifest.
+    /// All construction sites should use this so new fields stay in sync.
+    pub fn for_plugin(plugin: &dyn NexusPlugin) -> Self {
+        Self {
+            redis_prefix: plugin.manifest().name.to_string(),
+        }
+    }
+}
+
 /// Static metadata returned by every plugin.
 pub struct PluginManifest {
     /// Unique plugin name used in Redis key scoping and route mounting.
