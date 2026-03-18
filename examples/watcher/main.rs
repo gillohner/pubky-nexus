@@ -48,7 +48,7 @@ async fn main() -> Result<(), DynError> {
                 moderation_id,
                 moderated_tags: Vec::new(),
             };
-            NexusWatcherBuilder(config).start(None).await?;
+            NexusWatcherBuilder { config, plugins: vec![] }.start(None).await?;
         }
     }
 

@@ -2912,6 +2912,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "mapky-app-specs"
+version = "0.1.0"
+dependencies = [
+ "base32",
+ "blake3",
+ "js-sys",
+ "pubky 0.5.4",
+ "pubky-app-specs 0.4.4",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "url",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "mapky-nexus-plugin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "mapky-app-specs",
+ "neo4rs",
+ "nexus-common",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3054,6 +3091,7 @@ name = "nexus-common"
 version = "0.4.1"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
  "deadpool-redis",
  "dirs",
@@ -3064,7 +3102,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk 0.31.0",
  "pubky 0.6.0",
- "pubky-app-specs",
+ "pubky-app-specs 0.4.0",
  "redis",
  "serde",
  "serde_json",
@@ -3088,7 +3126,7 @@ dependencies = [
  "nexus-common",
  "nexus-watcher",
  "nexus-webapi",
- "pubky-app-specs",
+ "pubky-app-specs 0.4.0",
  "tokio",
 ]
 
@@ -3105,7 +3143,7 @@ dependencies = [
  "nexus-common",
  "opentelemetry 0.31.0",
  "pubky 0.6.0",
- "pubky-app-specs",
+ "pubky-app-specs 0.4.0",
  "pubky-testnet",
  "rand 0.10.0",
  "serde",
@@ -3134,7 +3172,7 @@ dependencies = [
  "nexus-common",
  "opentelemetry 0.31.0",
  "pubky 0.6.0",
- "pubky-app-specs",
+ "pubky-app-specs 0.4.0",
  "pubky-testnet",
  "serde",
  "serde_json",
@@ -3154,10 +3192,12 @@ name = "nexusd"
 version = "0.4.1"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
  "clap",
  "dirs",
  "futures",
+ "mapky-nexus-plugin",
  "neo4rs",
  "nexus-common",
  "nexus-watcher",
@@ -3167,6 +3207,7 @@ dependencies = [
  "tokio",
  "tokio-shared-rt",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]
@@ -4148,6 +4189,23 @@ dependencies = [
  "serde_json",
  "url",
  "utoipa",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "pubky-app-specs"
+version = "0.4.4"
+dependencies = [
+ "base32",
+ "blake3",
+ "js-sys",
+ "mime",
+ "pubky 0.5.4",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "url",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -6311,6 +6369,7 @@ checksum = "6d79d08d92ab8af4c5e8a6da20c47ae3f61a0f1dabc1997cdf2d082b757ca08b"
 dependencies = [
  "proc-macro2",
  "quote",
+ "regex",
  "syn 2.0.117",
 ]
 

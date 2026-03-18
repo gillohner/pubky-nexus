@@ -1,7 +1,7 @@
 use crate::db::get_neo4j_graph;
 use crate::db::graph::error::{GraphError, GraphResult};
 use crate::db::graph::Query;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Ensure the Neo4j graph has the required constraints and indexes
 pub async fn setup_graph() -> GraphResult<()> {
@@ -30,11 +30,19 @@ pub async fn setup_graph() -> GraphResult<()> {
     let graph = get_neo4j_graph()?;
 
     for &ddl in queries {
-        graph.run(Query::new("setup_ddl", ddl)).await.map_err(|e| {
-            GraphError::Generic(format!(
-                "Failed to apply graph constraint/index '{ddl}': {e}"
-            ))
-        })?;
+        if let Err(e) = graph.run(Query::new("setup_ddl", ddl)).await {
+            let msg = e.to_string();
+            // Neo4j 5.26+ has a regression where `IF NOT EXISTS` doesn't suppress
+            // `EquivalentSchemaRuleAlreadyExists` when two callers race at startup.
+            // The schema rule exists either way, so this is safe to ignore.
+            if msg.contains("EquivalentSchemaRuleAlreadyExists") {
+                warn!("Schema rule already exists (concurrent init), ignoring: {ddl}");
+            } else {
+                return Err(GraphError::Generic(format!(
+                    "Failed to apply graph constraint/index '{ddl}': {e}"
+                )));
+            }
+        }
     }
 
     info!("Neo4j graph constraints and indexes have been applied successfully");

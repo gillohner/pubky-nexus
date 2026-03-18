@@ -1,5 +1,6 @@
 use nexus_common::models::event::{Event, EventProcessorError};
 
+use crate::dispatcher::EventDispatcher;
 use crate::events::handle;
 use crate::events::retry::event::RetryEvent;
 use crate::events::Moderation;
@@ -23,6 +24,8 @@ pub struct EventProcessor {
     pub tracer_name: String,
     pub moderation: Arc<Moderation>,
     pub shutdown_rx: Receiver<bool>,
+    /// Domain plugin dispatcher — intercepts events before social parsing.
+    pub dispatcher: Option<Arc<EventDispatcher>>,
 }
 
 #[async_trait::async_trait]
@@ -118,6 +121,13 @@ impl EventProcessor {
                     Err(e) => warn!("{e}"),
                 }
             } else {
+                // Let domain plugins claim their events before social parsing.
+                if let Some(ref dispatcher) = self.dispatcher {
+                    if dispatcher.try_dispatch(line).await {
+                        continue;
+                    }
+                }
+
                 let maybe_event = Event::parse_event(line, self.files_path.clone())
                     .inspect_err(|e| error!("{e}"))
                     .unwrap_or(None);
