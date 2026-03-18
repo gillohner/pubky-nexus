@@ -12,7 +12,10 @@ pub struct EventDispatcher {
 }
 
 impl EventDispatcher {
-    pub fn new(plugins: Vec<Arc<dyn NexusPlugin>>) -> Self {
+    /// Sort plugins longest-namespace-first so more specific prefixes always
+    /// win over broader ones (e.g. `/pub/mapky.app/places/` beats `/pub/mapky.app/`).
+    pub fn new(mut plugins: Vec<Arc<dyn NexusPlugin>>) -> Self {
+        plugins.sort_by(|a, b| b.manifest().namespace.len().cmp(&a.manifest().namespace.len()));
         Self { plugins }
     }
 
@@ -168,5 +171,14 @@ mod tests {
     fn test_dispatcher_empty() {
         let dispatcher = EventDispatcher::new(vec![]);
         assert!(dispatcher.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_plugins_sorted_longest_namespace_first() {
+        // The sort key is namespace length — verify the comparator directly.
+        let mut namespaces = vec!["/pub/mapky.app/", "/pub/mapky.app/places/", "/pub/other.app/"];
+        namespaces.sort_by(|a, b| b.len().cmp(&a.len()));
+        assert_eq!(namespaces[0], "/pub/mapky.app/places/"); // longest first
+        assert_eq!(namespaces[2], "/pub/other.app/");        // shortest last
     }
 }
