@@ -9,6 +9,8 @@ license = "MIT"
 
 [dependencies]
 async-trait = { workspace = true }
+axum = { workspace = true }
+utoipa = "5.4.0"
 dirs = "6.0.0"
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -16,8 +18,9 @@ futures = { workspace = true }
 neo4rs = { workspace = true }
 nexus-webapi = { version = "0.4.1", path = "../nexus-webapi" }
 nexus-common = { version = "0.4.1", path = "../nexus-common" }
-redis = { workspace = true, features = ["tokio-comp"] }
 nexus-watcher = { version = "0.4.1", path = "../nexus-watcher" }
+mapky-nexus-plugin = { path = "../../mapky/mapky-nexus-plugin" }
+redis = { workspace = true, features = ["tokio-comp"] }
 serde = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
