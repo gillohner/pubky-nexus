@@ -56,22 +56,21 @@ impl DaemonLauncher {
             plugins.push(mapky);
         }
 
+        // ── Webapi ──────────────────────────────────────────────────────
+        // Mount each plugin's OpenAPI doc if it provides one.
+        let mut nexus_webapi_builder = NexusApiBuilder::new(api_context)
+            .with_extra_routes(extra_routes);
+        for plugin in &plugins {
+            if let Some(doc) = plugin.openapi_docs() {
+                let path = format!("/api-docs/{}/openapi.json", plugin.manifest().name);
+                nexus_webapi_builder = nexus_webapi_builder.with_swagger_doc(path, doc);
+            }
+        }
+
         // ── Watcher ─────────────────────────────────────────────────────
         let nexus_watcher_builder =
             NexusWatcherBuilder::with_stack(config.watcher, &config.stack)
                 .with_plugins(plugins);
-
-        // ── Webapi ──────────────────────────────────────────────────────
-        #[allow(unused_mut)]
-        let mut nexus_webapi_builder = NexusApiBuilder::new(api_context)
-            .with_extra_routes(extra_routes);
-
-        #[cfg(feature = "mapky")]
-        {
-            let mapky_docs = MapkyPlugin::new().openapi_docs();
-            nexus_webapi_builder =
-                nexus_webapi_builder.with_swagger_doc("/api-docs/mapky/openapi.json", mapky_docs);
-        }
 
         try_join!(
             nexus_webapi_builder.start(Some(shutdown_rx.clone())),

@@ -146,6 +146,59 @@ mod tests {
         assert!(dispatcher.plugins.is_empty());
     }
 
+    // ── Integration tests with a minimal mock plugin ──────────────────────
+
+    struct MockPlugin;
+
+    #[async_trait::async_trait]
+    impl NexusPlugin for MockPlugin {
+        fn manifest(&self) -> nexus_common::plugin::PluginManifest {
+            nexus_common::plugin::PluginManifest {
+                name: "mock",
+                namespace: "/pub/mock.app/",
+            }
+        }
+        async fn handle_put(&self, _: &str, _: &[u8], _: &str, _: &PluginContext) -> Result<(), nexus_common::types::DynError> {
+            Ok(())
+        }
+        async fn handle_del(&self, _: &str, _: &str, _: &PluginContext) -> Result<(), nexus_common::types::DynError> {
+            Ok(())
+        }
+        fn routes(&self, _: PluginContext) -> axum::Router {
+            axum::Router::new()
+        }
+        async fn setup_schema(&self, _: &PluginContext) -> Result<(), nexus_common::types::DynError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_try_dispatch_matches_del_event() {
+        let dispatcher = EventDispatcher::new(vec![Arc::new(MockPlugin) as Arc<dyn NexusPlugin>]);
+        let result = dispatcher
+            .try_dispatch("DEL pubky://abc123/pub/mock.app/items/id1")
+            .await;
+        assert!(matches!(result, Ok(true)));
+    }
+
+    #[tokio::test]
+    async fn test_try_dispatch_no_match_returns_false() {
+        let dispatcher = EventDispatcher::new(vec![Arc::new(MockPlugin) as Arc<dyn NexusPlugin>]);
+        let result = dispatcher
+            .try_dispatch("DEL pubky://abc123/pub/other.app/items/id1")
+            .await;
+        assert!(matches!(result, Ok(false)));
+    }
+
+    #[tokio::test]
+    async fn test_try_dispatch_empty_dispatcher_returns_false() {
+        let dispatcher = EventDispatcher::new(vec![]);
+        let result = dispatcher
+            .try_dispatch("DEL pubky://abc123/pub/mock.app/items/id1")
+            .await;
+        assert!(matches!(result, Ok(false)));
+    }
+
     #[test]
     fn test_plugins_sorted_longest_namespace_first() {
         // The sort key is namespace length — verify the comparator directly.

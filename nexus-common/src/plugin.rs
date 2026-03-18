@@ -75,4 +75,11 @@ pub trait NexusPlugin: Send + Sync {
 
     /// Create Neo4j constraints and indexes on startup (idempotent).
     async fn setup_schema(&self, ctx: &PluginContext) -> Result<(), DynError>;
+
+    /// Return an OpenAPI document for this plugin's routes, or `None` if the
+    /// plugin does not expose API documentation.  nexusd mounts each `Some`
+    /// doc at `/api-docs/{name}/openapi.json`.
+    fn openapi_docs(&self) -> Option<utoipa::openapi::OpenApi> {
+        None
+    }
 }

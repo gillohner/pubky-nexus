@@ -23,6 +23,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+axum = { workspace = true }
 base32 = "0.5"
 httpc-test = "0.1.10"
 pubky-testnet = { workspace = true }

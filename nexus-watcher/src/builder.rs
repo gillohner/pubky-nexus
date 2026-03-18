@@ -106,7 +106,10 @@ impl NexusWatcherBuilder {
 
         self.init_stack().await?;
 
-        // Setup Neo4j schema for each registered plugin (idempotent)
+        // Setup Neo4j schema for each registered plugin (idempotent).
+        // Failure is intentionally fatal: a plugin whose schema is missing
+        // would silently index incomplete data, which is harder to detect
+        // and recover from than a clean startup failure.
         for plugin in &self.plugins {
             plugin.setup_schema(&PluginContext::for_plugin(plugin.as_ref())).await?;
         }

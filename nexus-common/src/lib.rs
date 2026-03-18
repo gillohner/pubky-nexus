@@ -18,9 +18,9 @@ pub mod db;
 mod macros;
 pub mod media;
 pub mod models;
+pub mod plugin;
 mod stack;
 pub mod types;
-pub mod plugin;
 pub mod utils;
 
 pub use config::*;
