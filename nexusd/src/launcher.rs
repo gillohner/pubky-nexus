@@ -1,8 +1,11 @@
 use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
 use axum::Router;
+#[cfg(feature = "mapky")]
 use mapky_nexus_plugin::MapkyPlugin;
-use nexus_common::plugin::{NexusPlugin, PluginContext};
+use nexus_common::plugin::NexusPlugin;
+#[cfg(feature = "mapky")]
+use nexus_common::plugin::PluginContext;
 use nexus_common::DaemonConfig;
 use nexus_common::{types::DynError, utils::create_shutdown_rx};
 use nexus_watcher::NexusWatcherBuilder;
@@ -37,26 +40,41 @@ impl DaemonLauncher {
             .await?;
 
         // ── Domain plugins ──────────────────────────────────────────────
-        // Each plugin is shared between the watcher (event indexing) and the
-        // webapi (API routes). The watcher builder calls setup_schema() on
-        // startup; the webapi builder mounts the plugin's routes.
+        // Plugins are compiled in via feature flags. Without a feature flag
+        // nexusd builds and runs with no domain plugins (pure social graph).
+        // Example: cargo run -p nexusd --features mapky
 
-        let mapky: Arc<MapkyPlugin> = Arc::new(MapkyPlugin::new());
-        let mapky_ctx = PluginContext {
-            redis_prefix: "mapky".to_string(),
-        };
-        let mapky_routes = Router::new().nest("/v0/mapky", mapky.routes(mapky_ctx));
-        let mapky_docs = mapky.openapi_docs();
+        #[allow(unused_mut)]
+        let mut plugins: Vec<Arc<dyn NexusPlugin>> = vec![];
+        #[allow(unused_mut)]
+        let mut extra_routes = Router::new();
+
+        #[cfg(feature = "mapky")]
+        {
+            let mapky: Arc<MapkyPlugin> = Arc::new(MapkyPlugin::new());
+            let mapky_ctx = PluginContext {
+                redis_prefix: "mapky".to_string(),
+            };
+            extra_routes = extra_routes.nest("/v0/mapky", mapky.routes(mapky_ctx));
+            plugins.push(mapky);
+        }
 
         // ── Watcher ─────────────────────────────────────────────────────
         let nexus_watcher_builder =
             NexusWatcherBuilder::with_stack(config.watcher, &config.stack)
-                .with_plugins(vec![mapky]);
+                .with_plugins(plugins);
 
         // ── Webapi ──────────────────────────────────────────────────────
-        let nexus_webapi_builder = NexusApiBuilder::new(api_context)
-            .with_extra_routes(mapky_routes)
-            .with_swagger_doc("/api-docs/mapky/openapi.json", mapky_docs);
+        #[allow(unused_mut)]
+        let mut nexus_webapi_builder = NexusApiBuilder::new(api_context)
+            .with_extra_routes(extra_routes);
+
+        #[cfg(feature = "mapky")]
+        {
+            let mapky_docs = MapkyPlugin::new().openapi_docs();
+            nexus_webapi_builder =
+                nexus_webapi_builder.with_swagger_doc("/api-docs/mapky/openapi.json", mapky_docs);
+        }
 
         try_join!(
             nexus_webapi_builder.start(Some(shutdown_rx.clone())),
