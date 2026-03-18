@@ -120,8 +120,13 @@ impl EventProcessor {
             } else {
                 // Let domain plugins claim their events before social parsing.
                 if let Some(ref dispatcher) = self.dispatcher {
-                    if dispatcher.try_dispatch(line).await {
-                        continue;
+                    match dispatcher.try_dispatch(line).await {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(e) => {
+                            error!("Plugin dispatch error for {line}: {e}");
+                            continue;
+                        }
                     }
                 }
 
