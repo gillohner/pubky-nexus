@@ -17,6 +17,15 @@ pub struct NexusWatcherBuilder {
     pub plugins: Vec<Arc<dyn NexusPlugin>>,
 }
 
+impl std::fmt::Debug for NexusWatcherBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NexusWatcherBuilder")
+            .field("config", &self.config)
+            .field("plugins", &self.plugins.iter().map(|p| p.manifest().name).collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 impl NexusWatcherBuilder {
     /// Creates a `NexusWatcherBuilder` instance with the given configuration and stack settings.
     pub fn with_stack(mut config: WatcherConfig, stack: &StackConfig) -> Self {

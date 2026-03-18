@@ -11,6 +11,14 @@ pub struct EventDispatcher {
     plugins: Vec<Arc<dyn NexusPlugin>>,
 }
 
+impl std::fmt::Debug for EventDispatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventDispatcher")
+            .field("plugins", &self.plugins.iter().map(|p| p.manifest().name).collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 impl EventDispatcher {
     /// Sort plugins longest-namespace-first so more specific prefixes always
     /// win over broader ones (e.g. `/pub/mapky.app/places/` beats `/pub/mapky.app/`).
