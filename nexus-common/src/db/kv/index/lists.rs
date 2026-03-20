@@ -26,6 +26,14 @@ pub async fn put(prefix: &str, key: &str, values: &[&str]) -> RedisResult<()> {
     Ok(())
 }
 
+/// Returns the number of elements in a Redis list.
+pub async fn len(prefix: &str, key: &str) -> RedisResult<u64> {
+    let index_key = format!("{prefix}:{key}");
+    let mut redis_conn = get_redis_conn().await?;
+    let count: u64 = redis_conn.llen(index_key).await?;
+    Ok(count)
+}
+
 /// Retrieves a range of elements from a Redis list.
 ///
 /// This function retrieves elements from a specified Redis list within a given range.

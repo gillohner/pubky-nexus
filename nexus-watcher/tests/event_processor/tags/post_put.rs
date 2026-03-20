@@ -54,7 +54,7 @@ async fn test_homeserver_put_tag_post() -> Result<()> {
     };
     let tag_path = tag.hs_path();
 
-    let (_, events_in_redis_before) = Event::get_events_from_redis(None, 1000).await.unwrap();
+    let events_in_redis_before = Event::count_events_in_redis().await.unwrap();
     // Put tag
     test.put(&user_kp, &tag_path, tag).await?;
 
@@ -71,7 +71,7 @@ async fn test_homeserver_put_tag_post() -> Result<()> {
     assert_eq!(post_tag.taggers[0], tagger_user_id);
 
     // CACHE_OP: Check if the tag is correctly cached
-    let (_, events_in_redis_after) = Event::get_events_from_redis(None, 1000).await.unwrap();
+    let events_in_redis_after = Event::count_events_in_redis().await.unwrap();
     assert!(events_in_redis_after > events_in_redis_before);
     let cache_post_tag = TagPost::get_from_index(
         &tagger_user_id,
@@ -184,10 +184,12 @@ async fn test_homeserver_put_tag_post_unique_count() -> Result<()> {
     };
     let (post_id, post_path) = test.create_post(&tagger_kp, &post).await?;
 
-    let label = "tag-183";
+    // Unique label per run: TagSearch is global, so a static label can linger in
+    // Redis from a prior failed run and cause a false positive on the empty-check.
+    let label = format!("tag-183-{}", &tagger_user_id[..8]);
     let tag = PubkyAppTag {
         uri: post_uri_builder(tagger_user_id.clone(), post_id.clone()),
-        label: label.to_string(),
+        label: label.clone(),
         created_at: Utc::now().timestamp_millis(),
     };
     let tag_path = tag.hs_path();
@@ -206,7 +208,7 @@ async fn test_homeserver_put_tag_post_unique_count() -> Result<()> {
     assert_eq!(post_counts_after_step_2.tags, 0);
     assert_eq!(post_counts_after_step_2.unique_tags, 0);
 
-    let tag_suggestions = TagSearch::get_by_label(label, &Pagination::default()).await?;
+    let tag_suggestions = TagSearch::get_by_label(&label, &Pagination::default()).await?;
     let tag_suggestions_found = tag_suggestions.is_some_and(|x| !x.is_empty());
     assert!(!tag_suggestions_found);
 

@@ -26,11 +26,62 @@ use pubky_testnet::Testnet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{Mutex, OnceCell};
 use tracing::debug;
 
 use crate::event_processor::utils::default_moderation_tests;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Shared testnet instance — created once per process, reused by all tests.
+///
+/// Each `Testnet::new()` creates an isolated DHT network. Because `PubkyConnector`
+/// is a process-wide `OnceCell`, only the first SDK ever gets registered; subsequent
+/// tests that create their own testnet would get an unreachable homeserver. Sharing
+/// one `Testnet` lets every test create homeservers in the same DHT while using the
+/// same SDK already stored in `PubkyConnector`.
+static SHARED_TESTNET: OnceCell<Arc<Mutex<Testnet>>> = OnceCell::const_new();
+
+/// Shared homeserver ID — one homeserver is created per process and reused by all
+/// tests. Creating a new homeserver for every test exhausts the PostgreSQL connection
+/// pool when tests interleave on the shared tokio runtime.
+static SHARED_HOMESERVER_ID: OnceCell<String> = OnceCell::const_new();
+
+/// Returns the process-wide `Testnet`, initialising it on first call.
+/// Also seeds `PubkyConnector` with the shared SDK (idempotent after first call).
+async fn shared_testnet() -> Arc<Mutex<Testnet>> {
+    SHARED_TESTNET
+        .get_or_init(|| async {
+            let mut testnet = Testnet::new().await.expect("failed to create shared testnet");
+            testnet
+                .create_http_relay()
+                .await
+                .expect("failed to create http relay");
+            let sdk = testnet.sdk().expect("testnet SDK unavailable");
+            PubkyConnector::init_from(sdk)
+                .await
+                .expect("failed to init PubkyConnector");
+            Arc::new(Mutex::new(testnet))
+        })
+        .await
+        .clone()
+}
+
+/// Returns the shared homeserver's z32-encoded public key, creating it on first call.
+async fn shared_homeserver_id() -> String {
+    let testnet = shared_testnet().await;
+    SHARED_HOMESERVER_ID
+        .get_or_init(|| async {
+            let mut t = testnet.lock().await;
+            t.create_random_homeserver()
+                .await
+                .expect("failed to create shared homeserver")
+                .public_key()
+                .z32()
+        })
+        .await
+        .clone()
+}
 
 /// Generate a unique post ID for tests.
 /// Uses PID-based offset for inter-process uniqueness and atomic counter
@@ -48,7 +99,7 @@ pub fn generate_post_id() -> String {
 
 /// Struct to hold the setup environment for tests
 pub struct WatcherTest {
-    pub testnet: Testnet,
+    pub testnet: Arc<Mutex<Testnet>>,
     /// The homeserver ID
     pub homeserver_id: String,
     /// The event processor runner
@@ -75,6 +126,53 @@ impl WatcherTest {
     ///
     /// # Returns
     /// Returns a fully configured `EventProcessorRunner` ready for use in tests.
+    /// Sets up the test environment with the MapkyPlugin registered.
+    ///
+    /// This variant mirrors `setup()` but additionally creates an `EventDispatcher`
+    /// with the MapkyPlugin and stores it as the global dispatcher so that
+    /// cross-domain tag handlers can resolve `MapkyPost` targets.
+    #[cfg(feature = "mapky")]
+    pub async fn setup_with_mapky_plugin() -> Result<Self> {
+        use mapky_nexus_plugin::MapkyPlugin;
+        use nexus_common::plugin::{NexusPlugin, PluginContext};
+        use nexus_watcher::dispatcher::{set_dispatcher, EventDispatcher};
+
+        if let Err(e) = StackManager::setup(&StackConfig::default()).await {
+            return Err(Error::msg(format!("could not initialise the stack, {e:?}")));
+        }
+
+        let testnet = shared_testnet().await;
+        let homeserver_id = shared_homeserver_id().await;
+        let pubky_id = PubkyId::try_from(&homeserver_id).unwrap();
+        Homeserver::persist_if_unknown(pubky_id.clone())
+            .await
+            .unwrap();
+
+        // Set up the MapkyPlugin schema and register the global dispatcher.
+        let mapky = std::sync::Arc::new(MapkyPlugin::new());
+        let ctx = PluginContext::for_plugin(mapky.as_ref());
+        mapky
+            .setup_schema(&ctx)
+            .await
+            .map_err(|e| Error::msg(format!("Mapky schema setup failed: {e}")))?;
+
+        let dispatcher = std::sync::Arc::new(EventDispatcher::new(vec![
+            mapky as std::sync::Arc<dyn nexus_common::plugin::NexusPlugin>,
+        ]));
+        set_dispatcher(dispatcher.clone());
+
+        let mut event_processor_runner =
+            Self::create_test_event_processor_runner(pubky_id);
+        event_processor_runner.dispatcher = Some(dispatcher);
+
+        Ok(Self {
+            testnet,
+            homeserver_id,
+            event_processor_runner,
+            ensure_event_processing: true,
+        })
+    }
+
     fn create_test_event_processor_runner(default_homeserver: PubkyId) -> EventProcessorRunner {
         let moderation = Arc::new(default_moderation_tests());
 
@@ -110,25 +208,14 @@ impl WatcherTest {
             return Err(Error::msg(format!("could not initialise the stack, {e:?}")));
         }
 
-        // WARNING: testnet initialization is time expensive, we only init one per process
-        // TODO: Maybe we should create a single testnet network (singleton and push there more homeservers)
-        // This can be further sped up by using Testnet::new_unseeded() with pubky-testnet 0.7.x
-        let mut testnet = Testnet::new().await?;
-        testnet.create_http_relay().await?;
-
-        // Create a random homeserver with a random public key
-        let homeserver_id = testnet.create_random_homeserver().await?.public_key().z32();
+        // All tests share a single homeserver. Creating one per test exhausts the
+        // PostgreSQL pool when tests interleave on the shared tokio runtime.
+        let testnet = shared_testnet().await;
+        let homeserver_id = shared_homeserver_id().await;
         let pubky_id = PubkyId::try_from(&homeserver_id).unwrap();
         Homeserver::persist_if_unknown(pubky_id.clone())
             .await
             .unwrap();
-
-        // Initialize the PubkyConnector with the test homeserver client
-        let sdk = testnet.sdk().unwrap();
-        match PubkyConnector::init_from(sdk).await {
-            Ok(_) => debug!("WatcherTest: PubkyConnector initialised"),
-            Err(e) => panic!("WatcherTest: PubkyConnector initialization failed: {}", e),
-        }
 
         // Initialize the test-scoped EventProcessorRunner; mirrors the standard processor behavior
         let event_processor_runner = Self::create_test_event_processor_runner(pubky_id);
@@ -217,7 +304,13 @@ impl WatcherTest {
 
         let signer = pubky.signer(user_kp.clone());
         let hs_pk: PublicKey = self.homeserver_id.clone().try_into()?;
-        signer.signup(&hs_pk, None).await?;
+        // 409 means the user is already registered on the shared homeserver from a
+        // previous test — treat that as success since the account is still usable.
+        match signer.signup(&hs_pk, None).await {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("409") || e.to_string().contains("already exists") => {}
+            Err(e) => return Err(e.into()),
+        }
 
         Ok(())
     }

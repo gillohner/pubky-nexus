@@ -29,6 +29,7 @@ async fn test_homeserver_del_post_with_attachments() -> Result<()> {
 
     let mut file_paths = Vec::new();
     let mut file_ids = Vec::new();
+    let mut file_absolute_urls = Vec::new();
 
     for i in [0, 1] {
         let blob_data = format!("DEL me, im part of attachment of file {}", i + 1);
@@ -50,13 +51,12 @@ async fn test_homeserver_del_post_with_attachments() -> Result<()> {
         };
         let (file_id, file_path) = test.create_file(&user_kp, &file).await?;
         file_paths.push(file_path);
+        let file_absolute_url = file_uri_builder(user_id.clone(), file_id.clone());
         file_ids.push(file_id);
+        file_absolute_urls.push(file_absolute_url);
     }
 
-    let post_attachments: Vec<String> = file_ids
-        .iter()
-        .map(|id| file_uri_builder(user_id.clone(), id.clone()))
-        .collect();
+    let post_attachments: Vec<String> = file_absolute_urls;
     let post = PubkyAppPost {
         content: "Watcher:DelWithAttachmentEvent:Post".to_string(),
         kind: PubkyAppPostKind::Short,

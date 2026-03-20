@@ -133,6 +133,11 @@ impl Event {
         self.put_index_list(&["Events"]).await
     }
 
+    /// Returns the total number of events stored in Redis.
+    pub async fn count_events_in_redis() -> RedisResult<u64> {
+        Self::len_index_list(&["Events"]).await
+    }
+
     pub async fn get_events_from_redis(
         cursor: Option<u64>,
         limit: usize,

@@ -256,6 +256,13 @@ pub trait RedisOps: Serialize + DeserializeOwned + Send + Sync {
         lists::put(&prefix, &key, &values).await
     }
 
+    /// Returns the number of elements in a Redis list identified by the provided key parts.
+    async fn len_index_list(key_parts: &[&str]) -> RedisResult<u64> {
+        let prefix = Self::prefix().await;
+        let key = key_parts.join(":");
+        lists::len(&prefix, &key).await
+    }
+
     /// Retrieves a range of elements from a Redis list using the provided key parts.
     ///
     /// This method fetches elements from a Redis list stored under the key generated from the provided `key_parts`.
