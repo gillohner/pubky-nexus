@@ -4177,8 +4177,12 @@ dependencies = [
 
 [[package]]
 name = "pubky-app-specs"
+<<<<<<< HEAD
 version = "0.4.0"
 source = "git+https://github.com/pubky/pubky-app-specs?rev=8b05c5fe7ad4df9a3cb39005e5019f99a5e5036d#8b05c5fe7ad4df9a3cb39005e5019f99a5e5036d"
+=======
+version = "0.4.4"
+>>>>>>> 9ac97135 (feat(plugin-system): thread uri_owner_id through resolve_graph_node for compound keys)
 dependencies = [
  "base32",
  "blake3",

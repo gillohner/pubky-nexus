@@ -57,16 +57,14 @@ impl KeyRepublisher {
     /// Start the periodic republish task which will republish the server packet to the DHT every hour.
     ///
     /// # Errors
-    /// - Throws an error if the initial publish fails.
     /// - Throws an error if the periodic republish task is already running.
     async fn start_periodic_republish(
         client: pkarr::Client,
         signed_packet: &SignedPacket,
     ) -> Result<JoinHandle<()>, DynError> {
-        // Publish once to make sure the packet is published to the DHT before this
-        // function returns.
-        // Throws an error if the packet is not published to the DHT.
-        Self::publish_once(&client, signed_packet).await?;
+        // Best-effort initial publish. On isolated testnets the DHT may be
+        // unreachable; treat that as non-fatal so nexusd can still start.
+        let _ = Self::publish_once(&client, signed_packet).await;
 
         // Start the periodic republish task.
         let signed_packet = signed_packet.clone();
