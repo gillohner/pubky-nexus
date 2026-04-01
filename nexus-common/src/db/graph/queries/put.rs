@@ -286,15 +286,6 @@ pub fn create_user_tag(
 
 /// Creates a `TAGGED` relationship between a user and a generic Resource node.
 /// The Resource is created (MERGE) if it does not already exist.
-/// # Arguments
-/// * `tagger_id` - The user creating the tag.
-/// * `resource_id` - The deterministic 32-char hex Resource ID.
-/// * `uri` - The normalized URI of the resource.
-/// * `scheme` - The URI scheme (https, pubky, nostr, etc.)
-/// * `app` - The app namespace the tag was created from (e.g., "mapky", "eventky").
-/// * `tag_id` - A unique identifier for the tagging relationship.
-/// * `label` - The tag label.
-/// * `indexed_at` - Timestamp when the tag was indexed.
 #[allow(clippy::too_many_arguments)]
 pub fn create_resource_tag(
     tagger_id: &str,
@@ -328,6 +319,37 @@ pub fn create_resource_tag(
     .param("tag_id", tag_id)
     .param("label", label)
     .param("indexed_at", indexed_at)
+}
+
+/// Creates a `TAGGED` relationship from a user to an arbitrary graph node.
+/// Used for cross-domain tagging (e.g. a `PubkyAppTag` targeting a `MapkyPost`).
+///
+/// `node_label` and `node_property` come from plugin code (not user input),
+/// so building them into the query string is safe.
+pub fn create_external_tag(
+    tagger_user_id: &str,
+    node_label: &str,
+    node_property: &str,
+    node_id: &str,
+    tag_id: &str,
+    label: &str,
+    indexed_at: i64,
+) -> Query {
+    let cypher = format!(
+        "MATCH (user:User {{id: $user_id}})
+         MATCH (target:{node_label} {{{node_property}: $target_id}})
+         OPTIONAL MATCH (user)-[existing:TAGGED {{label: $label}}]->(target)
+         MERGE (user)-[t:TAGGED {{label: $label}}]->(target)
+         ON CREATE SET t.indexed_at = $indexed_at,
+                       t.id = $tag_id
+         RETURN existing IS NOT NULL AS flag"
+    );
+    Query::new("create_external_tag", &cypher)
+        .param("user_id", tagger_user_id)
+        .param("target_id", node_id)
+        .param("tag_id", tag_id)
+        .param("label", label)
+        .param("indexed_at", indexed_at)
 }
 
 /// Create a file node

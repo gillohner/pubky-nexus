@@ -1,9 +1,10 @@
+use crate::dispatcher::get_dispatcher;
 use crate::events::retry::event::RetryEvent;
 use crate::events::EventProcessorError;
 
 use chrono::Utc;
 use nexus_common::db::kv::{RedisResult, ScoreAction};
-use nexus_common::db::{fetch_row_from_graph, queries, OperationOutcome, RedisOps};
+use nexus_common::db::{fetch_row_from_graph, get_neo4j_graph, queries, OperationOutcome, RedisOps};
 use nexus_common::models::homeserver::Homeserver;
 use nexus_common::models::notification::Notification;
 use nexus_common::models::post::search::PostsByTagSearch;
@@ -389,7 +390,9 @@ async fn put_sync_user(
 /// Tag an external (plugin-owned) graph node.
 ///
 /// Resolves the target node via the registered plugin dispatcher, then creates
-/// a `TAGGED` relationship in Neo4j and increments the tagger's counts.
+/// a `TAGGED` relationship in Neo4j. Falls back to a no-op if no plugin is
+/// registered or the plugin can't resolve the node (the universal tag handler
+/// will create a generic Resource node for it instead).
 async fn put_sync_external(
     tagger_id: PubkyId,
     tag_id: &str,
@@ -400,10 +403,6 @@ async fn put_sync_external(
     resource_id: &str,
     uri_owner_id: &str,
 ) -> Result<(), EventProcessorError> {
-    use crate::dispatcher::get_dispatcher;
-    use nexus_common::db::get_neo4j_graph;
-
-    // 1. Resolve the target node via the plugin dispatcher.
     let dispatcher = get_dispatcher().ok_or_else(|| {
         EventProcessorError::generic(
             "No plugin dispatcher available for external tag resolution".to_string(),
@@ -417,7 +416,6 @@ async fn put_sync_external(
             dependency: vec![format!("{app_path}:{resource_type}:{resource_id}")],
         })?;
 
-    // 2. Create the TAGGED relationship in Neo4j.
     let graph = get_neo4j_graph().map_err(EventProcessorError::generic)?;
     let query = queries::put::create_external_tag(
         tagger_id.as_ref(),
@@ -433,9 +431,7 @@ async fn put_sync_external(
         .await
         .map_err(|e| EventProcessorError::generic(e.to_string()))?;
 
-    // 3. Increment tagger's "tagged" count.
     UserCounts::increment(&tagger_id, "tagged", None).await?;
-
     Ok(())
 }
 
