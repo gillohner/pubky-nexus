@@ -48,7 +48,9 @@ static SHARED_HOMESERVER_ID: OnceCell<String> = OnceCell::const_new();
 async fn shared_testnet() -> Arc<Mutex<Testnet>> {
     SHARED_TESTNET
         .get_or_init(|| async {
-            let mut testnet = Testnet::new().await.expect("failed to create shared testnet");
+            let mut testnet = Testnet::new()
+                .await
+                .expect("failed to create shared testnet");
             testnet
                 .create_http_relay()
                 .await
@@ -131,7 +133,9 @@ impl WatcherTest {
     }
 
     async fn init_stack_and_homeserver() -> Result<(Arc<Mutex<Testnet>>, String, PubkyId)> {
-        if let Err(e) = nexus_common::StackManager::setup(&nexus_common::StackConfig::default()).await {
+        if let Err(e) =
+            nexus_common::StackManager::setup(&nexus_common::StackConfig::default()).await
+        {
             return Err(Error::msg(format!("could not initialise the stack, {e:?}")));
         }
         let testnet = shared_testnet().await;
@@ -165,10 +169,12 @@ impl WatcherTest {
 
         for plugin in &plugins {
             let ctx = PluginContext::for_plugin(plugin.as_ref());
-            plugin
-                .setup_schema(&ctx)
-                .await
-                .map_err(|e| Error::msg(format!("plugin '{}' schema setup failed: {e}", plugin.manifest().name)))?;
+            plugin.setup_schema(&ctx).await.map_err(|e| {
+                Error::msg(format!(
+                    "plugin '{}' schema setup failed: {e}",
+                    plugin.manifest().name
+                ))
+            })?;
         }
 
         let dispatcher = Arc::new(EventDispatcher::new(plugins));
@@ -243,7 +249,8 @@ impl WatcherTest {
         let hs_pk: PublicKey = self.homeserver_id.clone().try_into()?;
         match signer.signup(&hs_pk, None).await {
             Ok(_) => {}
-            Err(e) if e.to_string().contains("409") || e.to_string().contains("already exists") => {}
+            Err(e) if e.to_string().contains("409") || e.to_string().contains("already exists") => {
+            }
             Err(e) => return Err(e.into()),
         }
         Ok(())

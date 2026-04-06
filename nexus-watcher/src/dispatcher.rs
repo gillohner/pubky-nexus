@@ -361,7 +361,15 @@ mod tests {
             .await;
 
         assert!(matches!(result, Ok(true)));
-        assert_eq!(count_a.load(Ordering::SeqCst), 1, "plugin_a should have been called");
-        assert_eq!(count_b.load(Ordering::SeqCst), 1, "plugin_b should have been called");
+        assert_eq!(
+            count_a.load(Ordering::SeqCst),
+            1,
+            "plugin_a should have been called"
+        );
+        assert_eq!(
+            count_b.load(Ordering::SeqCst),
+            1,
+            "plugin_b should have been called"
+        );
     }
 }
