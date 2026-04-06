@@ -25,7 +25,7 @@ use tokio::sync::{Mutex, OnceCell};
 
 use crate::dispatcher::{set_dispatcher, EventDispatcher};
 use crate::events::Moderation;
-use crate::service::{EventProcessorRunner, NexusWatcher, TEventProcessorRunner};
+use crate::service::{EventProcessorRunner, TEventProcessorRunner};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -131,7 +131,7 @@ impl WatcherTest {
     }
 
     async fn init_stack_and_homeserver() -> Result<(Arc<Mutex<Testnet>>, String, PubkyId)> {
-        if let Err(e) = NexusWatcher::builder().init_test_stack().await {
+        if let Err(e) = nexus_common::StackManager::setup(&nexus_common::StackConfig::default()).await {
             return Err(Error::msg(format!("could not initialise the stack, {e:?}")));
         }
         let testnet = shared_testnet().await;

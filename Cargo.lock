@@ -3073,6 +3073,7 @@ dependencies = [
  "mapky-app-specs",
  "neo4rs",
  "nexus-common",
+ "pubky-app-specs 0.4.4",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
