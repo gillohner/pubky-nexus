@@ -4,6 +4,7 @@ mod follows;
 mod homeserver;
 mod mentions;
 mod network;
+mod plugins;
 mod posts;
 mod tags;
 mod users;
