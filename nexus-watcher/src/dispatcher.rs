@@ -85,6 +85,15 @@ impl EventDispatcher {
             return Ok(false);
         }
 
+        // Files and blobs are handled by the universal file handler in nexus core.
+        // Let them fall through so plugins don't need to duplicate file logic.
+        let resource_suffix = path
+            .strip_prefix(matching[0].manifest().namespace)
+            .unwrap_or(path);
+        if resource_suffix.starts_with("files/") || resource_suffix.starts_with("blobs/") {
+            return Ok(false);
+        }
+
         let user_id = match extract_user_id(uri) {
             Some(u) => u,
             None => {
