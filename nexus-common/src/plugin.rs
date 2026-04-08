@@ -82,36 +82,4 @@ pub trait NexusPlugin: Send + Sync {
     fn openapi_docs(&self) -> Option<utoipa::openapi::OpenApi> {
         None
     }
-
-    /// Resolve an external URI to a Neo4j node that can be the target of
-    /// cross-domain operations (tags, bookmarks, embeds).
-    ///
-    /// `uri_owner_id` is the pubky ID of the user who owns the target resource
-    /// (extracted from the `pubky://{owner}/…` URI by the tag handler).
-    /// Together with `resource_id` it forms the compound identity of the node.
-    ///
-    /// Returns `Some(GraphNodeRef)` if the resource exists in the graph,
-    /// or `None` if it doesn't exist or this plugin doesn't support the
-    /// resource type.
-    async fn resolve_graph_node(
-        &self,
-        resource_type: &str,
-        resource_id: &str,
-        uri_owner_id: &str,
-        ctx: &PluginContext,
-    ) -> Result<Option<GraphNodeRef>, DynError> {
-        let _ = (resource_type, resource_id, uri_owner_id, ctx);
-        Ok(None)
-    }
-}
-
-/// Reference to a Neo4j node for cross-domain operations.
-#[derive(Debug, Clone)]
-pub struct GraphNodeRef {
-    /// Neo4j label, e.g. `"MapkyAppPost"`
-    pub label: String,
-    /// Property name to match on, e.g. `"id"`
-    pub property: String,
-    /// Property value — for MapkyAppPost this is the compound `author_id:post_id`
-    pub id: String,
 }

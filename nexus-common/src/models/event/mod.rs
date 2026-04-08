@@ -109,9 +109,6 @@ impl Event {
                     "Unknown resource in URI: {uri}"
                 )))
             }
-            // External resources are intercepted by the plugin dispatcher before
-            // Event::parse_event is called. If we reach here, no plugin claimed it.
-            Resource::External { .. } => return Ok(None),
             // Known resources not handled by Nexus
             Resource::LastRead | Resource::Feed(_) | Resource::Blob(_) => {
                 return Ok(ParseResult::Skipped)

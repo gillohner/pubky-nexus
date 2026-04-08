@@ -1,10 +1,9 @@
-use crate::dispatcher::get_dispatcher;
 use crate::events::retry::event::RetryEvent;
 use crate::events::EventProcessorError;
 
 use chrono::Utc;
 use nexus_common::db::kv::{RedisResult, ScoreAction};
-use nexus_common::db::{fetch_row_from_graph, get_neo4j_graph, queries, OperationOutcome, RedisOps};
+use nexus_common::db::{fetch_row_from_graph, queries, OperationOutcome, RedisOps};
 use nexus_common::models::homeserver::Homeserver;
 use nexus_common::models::notification::Notification;
 use nexus_common::models::post::search::PostsByTagSearch;
@@ -47,26 +46,8 @@ pub async fn sync_put(
         }
         // If no post_id in the tagged URI, we place tag to a user.
         Resource::User => put_sync_user(tagger_id, user_id, &tag_id, &tag.label, indexed_at).await,
-        // Cross-domain tag: target is a plugin-owned resource (e.g. MapkyAppPost).
-        Resource::External {
-            app_path,
-            resource_type,
-            id,
-        } => {
-            put_sync_external(
-                tagger_id,
-                &tag_id,
-                &tag.label,
-                indexed_at,
-                &app_path,
-                &resource_type,
-                &id,
-                user_id.as_str(),
-            )
-            .await
-        }
         other => Err(EventProcessorError::generic(format!(
-            "The tagged resource is not Post, User, or External, instead is: {other:?}"
+            "The tagged resource is not Post or User, instead is: {other:?}"
         ))),
     }
 }
@@ -385,54 +366,6 @@ async fn put_sync_user(
             Ok(())
         }
     }
-}
-
-/// Tag an external (plugin-owned) graph node.
-///
-/// Resolves the target node via the registered plugin dispatcher, then creates
-/// a `TAGGED` relationship in Neo4j. Falls back to a no-op if no plugin is
-/// registered or the plugin can't resolve the node (the universal tag handler
-/// will create a generic Resource node for it instead).
-async fn put_sync_external(
-    tagger_id: PubkyId,
-    tag_id: &str,
-    tag_label: &str,
-    indexed_at: i64,
-    app_path: &str,
-    resource_type: &str,
-    resource_id: &str,
-    uri_owner_id: &str,
-) -> Result<(), EventProcessorError> {
-    let dispatcher = get_dispatcher().ok_or_else(|| {
-        EventProcessorError::generic(
-            "No plugin dispatcher available for external tag resolution".to_string(),
-        )
-    })?;
-
-    let node_ref = dispatcher
-        .resolve_external(app_path, resource_type, resource_id, uri_owner_id)
-        .await
-        .ok_or_else(|| EventProcessorError::MissingDependency {
-            dependency: vec![format!("{app_path}:{resource_type}:{resource_id}")],
-        })?;
-
-    let graph = get_neo4j_graph().map_err(EventProcessorError::generic)?;
-    let query = queries::put::create_external_tag(
-        tagger_id.as_ref(),
-        &node_ref.label,
-        &node_ref.property,
-        &node_ref.id,
-        tag_id,
-        tag_label,
-        indexed_at,
-    );
-    graph
-        .run(query)
-        .await
-        .map_err(|e| EventProcessorError::generic(e.to_string()))?;
-
-    UserCounts::increment(&tagger_id, "tagged", None).await?;
-    Ok(())
 }
 
 #[tracing::instrument(name = "tag.del", skip_all, fields(user_id = %user_id, tag_id = %tag_id))]

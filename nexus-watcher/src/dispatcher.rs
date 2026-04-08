@@ -125,47 +125,6 @@ impl EventDispatcher {
 
         Ok(true) // at least one plugin handled the event
     }
-
-    /// Resolve a `Resource::External` URI to a graph node via the owning plugin.
-    ///
-    /// Matches `app_path` against each plugin's namespace (strips `/pub/` prefix
-    /// and trailing `/` for comparison) and delegates to `resolve_graph_node`.
-    pub async fn resolve_external(
-        &self,
-        app_path: &str,
-        resource_type: &str,
-        resource_id: &str,
-        uri_owner_id: &str,
-    ) -> Option<GraphNodeRef> {
-        for plugin in &self.plugins {
-            let manifest = plugin.manifest();
-            // e.g. manifest.namespace = "/pub/mapky.app/" → "mapky.app"
-            let plugin_app = manifest
-                .namespace
-                .strip_prefix("/pub/")
-                .unwrap_or(manifest.namespace)
-                .trim_end_matches('/');
-            if plugin_app == app_path {
-                let ctx = PluginContext::for_plugin(plugin.as_ref());
-                match plugin
-                    .resolve_graph_node(resource_type, resource_id, uri_owner_id, &ctx)
-                    .await
-                {
-                    Ok(node_ref) => return node_ref,
-                    Err(e) => {
-                        tracing::error!(
-                            "Plugin '{}' failed to resolve {}/{}: {e}",
-                            manifest.name,
-                            resource_type,
-                            resource_id,
-                        );
-                        return None;
-                    }
-                }
-            }
-        }
-        None
-    }
 }
 
 /// Extract `/pub/{domain}.app/...` from `pubky://{user_id}/pub/...`.

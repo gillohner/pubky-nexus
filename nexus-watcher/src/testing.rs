@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
-use crate::dispatcher::{set_dispatcher, EventDispatcher};
+use crate::dispatcher::EventDispatcher;
 use crate::events::Moderation;
 use crate::service::{EventProcessorRunner, TEventProcessorRunner};
 
@@ -161,9 +161,8 @@ impl WatcherTest {
 
     /// Sets up the test environment with the given domain plugins registered.
     ///
-    /// Each plugin's schema is initialised and an `EventDispatcher` is installed
-    /// as the global dispatcher so that cross-domain event handlers can resolve
-    /// plugin-owned resource types.
+    /// Each plugin's schema is initialised and an `EventDispatcher` is created
+    /// and attached to the event processor runner so plugin events are routed.
     pub async fn setup_with_plugins(plugins: Vec<Arc<dyn NexusPlugin>>) -> Result<Self> {
         let (testnet, homeserver_id, pubky_id) = Self::init_stack_and_homeserver().await?;
 
@@ -178,7 +177,6 @@ impl WatcherTest {
         }
 
         let dispatcher = Arc::new(EventDispatcher::new(plugins));
-        set_dispatcher(dispatcher.clone());
 
         let mut event_processor_runner = Self::create_test_event_processor_runner(pubky_id);
         event_processor_runner.dispatcher = Some(dispatcher);
