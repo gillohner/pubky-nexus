@@ -3995,7 +3995,7 @@ dependencies = [
  "self_cell",
  "serde",
  "sha1_smol",
- "simple-dns 0.9.3",
+ "simple-dns",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4005,9 +4005,9 @@ dependencies = [
 
 [[package]]
 name = "pkarr"
-version = "5.0.4"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7bfb9143bbba379f246211eb68074d78db9cc048e4c5701f3b0e6cb1ec67ca2"
+checksum = "2f950360d31be432c0c9467fba5024a94f55128e7f32bc9d32db140369f24c77"
 dependencies = [
  "async-compat",
  "base32",
@@ -4033,7 +4033,7 @@ dependencies = [
  "self_cell",
  "serde",
  "sha1_smol",
- "simple-dns 0.11.2",
+ "simple-dns",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4056,7 +4056,7 @@ dependencies = [
  "governor",
  "http",
  "httpdate",
- "pkarr 5.0.4",
+ "pkarr 5.0.3",
  "rustls",
  "serde",
  "thiserror 2.0.18",
@@ -4080,7 +4080,7 @@ dependencies = [
  "ctrlc",
  "futures-lite",
  "hex",
- "pkarr 5.0.4",
+ "pkarr 5.0.3",
  "rand 0.9.3",
  "thiserror 2.0.18",
  "tokio",
@@ -4375,7 +4375,7 @@ dependencies = [
  "futures-util",
  "httpdate",
  "log",
- "pkarr 5.0.4",
+ "pkarr 5.0.3",
  "pubky-common 0.7.0",
  "reqwest 0.13.2",
  "serde",
@@ -4457,7 +4457,7 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.5",
  "js-sys",
  "once_cell",
- "pkarr 5.0.4",
+ "pkarr 5.0.3",
  "postcard",
  "pubky-timestamp",
  "rand 0.9.3",
@@ -4504,7 +4504,7 @@ dependencies = [
  "opentelemetry_sdk 0.29.0",
  "page_size",
  "percent-encoding",
- "pkarr 5.0.4",
+ "pkarr 5.0.3",
  "pkarr-republisher",
  "postcard",
  "prometheus",
@@ -4542,7 +4542,7 @@ dependencies = [
  "http-relay",
  "mainline 6.1.1",
  "once_cell",
- "pkarr 5.0.4",
+ "pkarr 5.0.3",
  "pkarr-relay",
  "pubky 0.7.0",
  "pubky-common 0.7.0",
@@ -5666,15 +5666,6 @@ name = "simple-dns"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dee851d0e5e7af3721faea1843e8015e820a234f81fda3dea9247e15bac9a86a"
-dependencies = [
- "bitflags",
-]
-
-[[package]]
-name = "simple-dns"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df350943049174c4ae8ced56c604e28270258faec12a6a48637a7655287c9ce0"
 dependencies = [
  "bitflags",
 ]
@@ -7032,7 +7023,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
