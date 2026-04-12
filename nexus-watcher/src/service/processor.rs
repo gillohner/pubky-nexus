@@ -174,13 +174,7 @@ impl EventProcessor {
     /// Attempts to handle an unrecognized URI as a universal tag at an app-specific path.
     /// Returns `true` if the event was claimed (regardless of success/failure).
     async fn try_handle_universal_tag(&self, event_type: &EventType, uri: &str) -> bool {
-        let result = crate::events::handlers::universal_tag::try_handle(
-            event_type,
-            uri,
-            &self.files_path,
-            &self.moderation,
-        )
-        .await;
+        let result = crate::events::handlers::universal_tag::try_handle(event_type, uri).await;
 
         let Some(result) = result else {
             return false;
@@ -192,7 +186,7 @@ impl EventProcessor {
                     error!("Universal tag non-retryable: {msg}");
                 }
                 _ => {
-                    let index_key = format!("{event_type}:universal_tag:{uri}");
+                    let index_key = format!("{event_type}:{uri}");
                     let retry_event = RetryEvent::new(e);
                     error!("{}, {}", retry_event.error_type, index_key);
                     if let Err(err) = retry_event.put_to_index(index_key).await {
@@ -225,7 +219,7 @@ impl EventProcessor {
                     error!("Universal file non-retryable: {msg}");
                 }
                 _ => {
-                    let index_key = format!("{event_type}:universal_file:{uri}");
+                    let index_key = format!("{event_type}:{uri}");
                     let retry_event = RetryEvent::new(e);
                     error!("{}, {}", retry_event.error_type, index_key);
                     if let Err(err) = retry_event.put_to_index(index_key).await {

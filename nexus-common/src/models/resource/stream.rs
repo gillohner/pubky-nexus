@@ -1,6 +1,6 @@
 use crate::db::graph::error::GraphError;
 use crate::db::kv::{RedisResult, ScoreAction, SortOrder};
-use crate::db::{fetch_row_from_graph, queries, RedisOps};
+use crate::db::{queries, RedisOps};
 use crate::models::error::ModelResult;
 use crate::models::resource::tag::TagResource;
 use crate::models::resource::ResourceDetails;
@@ -214,7 +214,7 @@ impl ResourceStream {
         pagination: Pagination,
         order: SortOrder,
         sorting: &ResourceSorting,
-        tags: &Option<Vec<String>>,
+        tags: Option<&[String]>,
     ) -> ModelResult<ResourceKeyStream> {
         let app = match source {
             ResourceStreamSource::App { app } => Some(app.as_str()),
@@ -223,10 +223,9 @@ impl ResourceStream {
 
         if can_use_index(app, tags) {
             let key_parts = build_index_key(sorting, app, tags);
-            let key_refs: Vec<&str> = key_parts.iter().map(|s| s.as_str()).collect();
 
             let entries = Self::try_from_index_sorted_set(
-                &key_refs,
+                &key_parts,
                 pagination.start,
                 pagination.end,
                 pagination.skip,
@@ -253,17 +252,13 @@ impl ResourceStream {
     async fn get_resource_keys_from_graph(
         app: Option<&str>,
         sorting: &ResourceSorting,
-        tags: &Option<Vec<String>>,
+        tags: Option<&[String]>,
         pagination: &Pagination,
         order: SortOrder,
     ) -> ModelResult<ResourceKeyStream> {
-        let label_refs: Option<Vec<&str>> = tags
-            .as_ref()
-            .map(|t| t.iter().map(|s| s.as_str()).collect());
-
         let query = queries::get::resource_stream(
             app,
-            label_refs.as_deref(),
+            tags,
             sorting,
             &order,
             pagination.skip.unwrap_or(0),
@@ -302,17 +297,8 @@ impl ResourceStream {
         let mut views = Vec::with_capacity(resource_ids.len());
 
         for resource_id in resource_ids {
-            // Load Resource node details from graph
-            let query = queries::get::get_resource_by_id(resource_id);
-            let maybe_row = fetch_row_from_graph(query).await?;
-
-            let details = match maybe_row {
-                Some(row) => ResourceDetails {
-                    id: row.get("id").unwrap_or_default(),
-                    uri: row.get("uri").unwrap_or_default(),
-                    scheme: row.get("scheme").unwrap_or_default(),
-                    indexed_at: row.get("indexed_at").unwrap_or(0),
-                },
+            let details = match ResourceDetails::get_by_id(resource_id).await? {
+                Some(d) => d,
                 None => continue, // Resource was deleted between query and load
             };
 
@@ -340,8 +326,8 @@ impl ResourceStream {
 }
 
 /// Determines whether a query can be satisfied by a pre-computed Redis sorted set.
-fn can_use_index(app: Option<&str>, tags: &Option<Vec<String>>) -> bool {
-    let tag_count = tags.as_ref().map_or(0, |t| t.len());
+fn can_use_index(app: Option<&str>, tags: Option<&[String]>) -> bool {
+    let tag_count = tags.map_or(0, |t| t.len());
     match (app, tag_count) {
         (None, 0) => true,    // Global, no filters
         (Some(_), 0) => true, // App filter only
@@ -352,39 +338,22 @@ fn can_use_index(app: Option<&str>, tags: &Option<Vec<String>>) -> bool {
 }
 
 /// Builds the Redis sorted set key for the given filter combination.
-fn build_index_key(
+fn build_index_key<'a>(
     sorting: &ResourceSorting,
-    app: Option<&str>,
-    tags: &Option<Vec<String>>,
-) -> Vec<String> {
+    app: Option<&'a str>,
+    tags: Option<&'a [String]>,
+) -> Vec<&'a str> {
     let sorting_suffix = match sorting {
         ResourceSorting::Timeline => "Timeline",
         ResourceSorting::TaggersCount => "TaggersCount",
     };
 
-    let tag = tags.as_ref().and_then(|t| t.first());
+    let tag = tags.and_then(|t| t.first());
 
     match (app, tag) {
-        (None, None) => vec!["Resources".into(), "Global".into(), sorting_suffix.into()],
-        (Some(a), None) => vec![
-            "Resources".into(),
-            "App".into(),
-            a.into(),
-            sorting_suffix.into(),
-        ],
-        (None, Some(label)) => vec![
-            "Resources".into(),
-            "Tag".into(),
-            label.clone(),
-            sorting_suffix.into(),
-        ],
-        (Some(a), Some(label)) => vec![
-            "Resources".into(),
-            "App".into(),
-            a.into(),
-            "Tag".into(),
-            label.clone(),
-            sorting_suffix.into(),
-        ],
+        (None, None) => vec!["Resources", "Global", sorting_suffix],
+        (Some(a), None) => vec!["Resources", "App", a, sorting_suffix],
+        (None, Some(label)) => vec!["Resources", "Tag", label, sorting_suffix],
+        (Some(a), Some(label)) => vec!["Resources", "App", a, "Tag", label, sorting_suffix],
     }
 }

@@ -1,5 +1,6 @@
 # Configuration files
-# Test and mock data  
+/config-local/
+# Test and mock data
 docker/.env
 docker/.database*
 # Files

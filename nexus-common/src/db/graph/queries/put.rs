@@ -286,6 +286,15 @@ pub fn create_user_tag(
 
 /// Creates a `TAGGED` relationship between a user and a generic Resource node.
 /// The Resource is created (MERGE) if it does not already exist.
+/// # Arguments
+/// * `tagger_id` - The user creating the tag.
+/// * `resource_id` - The deterministic 32-char hex Resource ID.
+/// * `uri` - The normalized URI of the resource.
+/// * `scheme` - The URI scheme (https, pubky, nostr, etc.)
+/// * `app` - The app namespace the tag was created from (e.g., "mapky", "eventky").
+/// * `tag_id` - A unique identifier for the tagging relationship.
+/// * `label` - The tag label.
+/// * `indexed_at` - Timestamp when the tag was indexed.
 #[allow(clippy::too_many_arguments)]
 pub fn create_resource_tag(
     tagger_id: &str,
