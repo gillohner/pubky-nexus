@@ -15,7 +15,7 @@ use pubky::Keypair;
 use pubky::PublicKey;
 use pubky::ResourcePath;
 use pubky_app_specs::{
-    traits::{HasIdPath, HasPath, HashId},
+    traits::{HasIdPath, HasPath, HashId, TimestampId},
     PubkyAppFile, PubkyAppFollow, PubkyAppPost, PubkyAppUser, PubkyId,
 };
 use pubky_testnet::Testnet;
