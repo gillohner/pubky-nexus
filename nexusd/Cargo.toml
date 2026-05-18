@@ -20,6 +20,7 @@ nexus-webapi = { version = "0.4.1", path = "../nexus-webapi" }
 nexus-common = { version = "0.4.1", path = "../nexus-common" }
 nexus-watcher = { version = "0.4.1", path = "../nexus-watcher" }
 mapky-nexus-plugin = { path = "../../mapky/mapky-nexus-plugin", optional = true }
+eventky-nexus-plugin = { path = "../../eventky-nexus-plugin", optional = true }
 redis = { workspace = true, features = ["tokio-comp"] }
 serde = { workspace = true }
 tracing = { workspace = true }
@@ -27,6 +28,7 @@ tokio = { workspace = true }
 
 [features]
 mapky = ["dep:mapky-nexus-plugin"]
+eventky = ["dep:eventky-nexus-plugin"]
 
 [dev-dependencies]
 tokio-shared-rt = { workspace = true }

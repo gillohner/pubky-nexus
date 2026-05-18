@@ -1755,6 +1755,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "eventky-app-specs"
+version = "0.1.0"
+dependencies = [
+ "base32",
+ "blake3",
+ "js-sys",
+ "pubky 0.5.4",
+ "pubky-app-specs 0.4.4",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "url",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "eventky-nexus-plugin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "eventky-app-specs",
+ "nexus-common",
+ "redis",
+ "serde",
+ "serde_json",
+ "utoipa",
+]
+
+[[package]]
 name = "eventsource-stream"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3111,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "mapky-app-specs"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "base32",
  "blake3",
@@ -3128,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "mapky-nexus-plugin"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3141,6 +3173,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3304,7 +3337,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk 0.31.0",
  "pubky 0.7.0",
- "pubky-app-specs 0.4.4",
+ "pubky-app-specs 0.4.4 (git+https://github.com/pubky/pubky-app-specs.git?rev=bf78fe845ef55e96984a3bea954b69053fa7e8af)",
  "redis",
  "serde",
  "serde_json",
@@ -3330,7 +3363,7 @@ dependencies = [
  "nexus-common",
  "nexus-watcher",
  "nexus-webapi",
- "pubky-app-specs 0.4.4",
+ "pubky-app-specs 0.4.4 (git+https://github.com/pubky/pubky-app-specs.git?rev=bf78fe845ef55e96984a3bea954b69053fa7e8af)",
  "tokio",
 ]
 
@@ -3351,7 +3384,7 @@ dependencies = [
  "nexus-watcher",
  "opentelemetry 0.31.0",
  "pubky 0.7.0",
- "pubky-app-specs 0.4.4",
+ "pubky-app-specs 0.4.4 (git+https://github.com/pubky/pubky-app-specs.git?rev=bf78fe845ef55e96984a3bea954b69053fa7e8af)",
  "pubky-testnet",
  "rand 0.10.1",
  "serde",
@@ -3379,7 +3412,7 @@ dependencies = [
  "neo4rs",
  "nexus-common",
  "pubky 0.7.0",
- "pubky-app-specs 0.4.4",
+ "pubky-app-specs 0.4.4 (git+https://github.com/pubky/pubky-app-specs.git?rev=bf78fe845ef55e96984a3bea954b69053fa7e8af)",
  "pubky-testnet",
  "serde",
  "serde_json",
@@ -3403,6 +3436,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "eventky-nexus-plugin",
  "futures",
  "mapky-nexus-plugin",
  "neo4rs",
@@ -4400,6 +4434,23 @@ dependencies = [
  "js-sys",
  "mime",
  "pubky 0.5.4",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "url",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "pubky-app-specs"
+version = "0.4.4"
+dependencies = [
+ "base32",
+ "blake3",
+ "js-sys",
+ "mime",
+ "pubky 0.7.0",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
