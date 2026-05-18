@@ -1,0 +1,135 @@
+name: Build & deploy shared nexusd (mapky + eventky)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pubky_nexus_ref:
+        description: "pubky-nexus ref to deploy"
+        required: false
+        default: "main"
+        type: string
+      mapky_plugin_ref:
+        description: "mapky-nexus-plugin ref"
+        required: false
+        default: "main"
+        type: string
+      eventky_plugin_ref:
+        description: "eventky-nexus-plugin ref"
+        required: false
+        default: "main"
+        type: string
+      release_tag:
+        description: "Release tag label used on VPS release dir"
+        required: false
+        default: "manual"
+        type: string
+
+concurrency:
+  group: deploy-nexusd-shared
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Resolve refs
+        id: refs
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          if [ -z "$TAG" ]; then TAG="manual"; fi
+          SAFE_TAG="${TAG//[^A-Za-z0-9._-]/_}"
+          echo "safe_tag=$SAFE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pubky-nexus
+        uses: actions/checkout@v5
+        with:
+          repository: gillohner/pubky-nexus
+          ref: ${{ inputs.pubky_nexus_ref || 'main' }}
+          path: pubky-nexus
+
+      - name: Checkout mapky plugin
+        uses: actions/checkout@v5
+        with:
+          repository: gillohner/mapky-nexus-plugin
+          ref: ${{ inputs.mapky_plugin_ref || 'main' }}
+          path: mapky/mapky-nexus-plugin
+
+      - name: Checkout eventky plugin
+        uses: actions/checkout@v5
+        with:
+          repository: gillohner/eventky-nexus-plugin
+          ref: ${{ inputs.eventky_plugin_ref || 'main' }}
+          path: eventky-nexus-plugin
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pubky-nexus -> pubky-nexus/target
+
+      - name: Build nexusd (release, with mapky+eventky)
+        working-directory: pubky-nexus
+        run: |
+          cargo build --release -p nexusd --features "mapky eventky" --bin nexusd
+          ls -la target/release/nexusd
+          file target/release/nexusd
+
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload binary + restart
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          TAG: ${{ steps.refs.outputs.safe_tag }}
+        run: |
+          set -euo pipefail
+          REMOTE_REL="/srv/nexusd/releases/${TAG}"
+
+          ssh -i ~/.ssh/deploy -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" "mkdir -p '${REMOTE_REL}'"
+
+          rsync -az --chmod=F0755 \
+            -e "ssh -i ~/.ssh/deploy -p ${SSH_PORT}" \
+            pubky-nexus/target/release/nexusd \
+            "${SSH_USER}@${SSH_HOST}:${REMOTE_REL}/nexusd"
+
+          ssh -i ~/.ssh/deploy -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" bash -se <<EOF
+          set -euo pipefail
+          ln -sfn '${REMOTE_REL}' /srv/nexusd/current.new
+          mv -Tf /srv/nexusd/current.new /srv/nexusd/current
+          ls -1dt /srv/nexusd/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
+          sudo /usr/bin/systemctl restart nexusd
+          EOF
+
+      - name: Health checks
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            ok_info=$(curl -sS -o /dev/null -w "%{http_code}" https://nexus.mapky.app/v0/info || echo 000)
+            ok_eventky=$(curl -sS -o /dev/null -w "%{http_code}" https://nexus.mapky.app/v0/eventky/health || echo 000)
+            ok_mapky=$(curl -sS -o /dev/null -w "%{http_code}" https://nexus.mapky.app/v0/mapky/btc/status || echo 000)
+            echo "attempt $i: info=$ok_info eventky=$ok_eventky mapky=$ok_mapky"
+            if [ "$ok_info" = "200" ] && [ "$ok_eventky" = "200" ] && [ "$ok_mapky" = "200" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          ssh -i ~/.ssh/deploy -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" 'journalctl -u nexusd --no-pager -n 120' || true
+          exit 1
