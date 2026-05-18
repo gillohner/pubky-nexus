@@ -89,3 +89,30 @@ jobs:
         if: always()
         working-directory: docker
         run: docker compose down --volumes
+
+  plugin-feature-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "plugin-feature-build"
+          cache-on-failure: true
+          cache-workspace-crates: true
+
+      - name: Build nexusd with mapky+eventky features
+        run: |
+          if [ -d "../mapky/mapky-nexus-plugin" ] && [ -d "../eventky-nexus-plugin" ]; then
+            cargo build -p nexusd --features "mapky eventky"
+          else
+            echo "Skipping combined feature build: plugin dirs are not present in this checkout layout"
+          fi
