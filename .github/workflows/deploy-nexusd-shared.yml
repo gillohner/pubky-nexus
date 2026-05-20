@@ -11,7 +11,7 @@ on:
       mapky_plugin_ref:
         description: "mapky-nexus-plugin ref"
         required: false
-        default: "main"
+        default: "master"
         type: string
       eventky_plugin_ref:
         description: "eventky-nexus-plugin ref"
@@ -52,7 +52,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: gillohner/mapky-nexus-plugin
-          ref: ${{ inputs.mapky_plugin_ref || 'main' }}
+          ref: ${{ inputs.mapky_plugin_ref || 'master' }}
           path: mapky/mapky-nexus-plugin
 
       - name: Checkout eventky plugin
