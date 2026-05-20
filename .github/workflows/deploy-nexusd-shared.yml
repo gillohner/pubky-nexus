@@ -28,6 +28,11 @@ on:
         required: false
         default: "master"
         type: string
+      pubky_app_specs_ref:
+        description: "pubky-app-specs ref"
+        required: false
+        default: "main"
+        type: string
       release_tag:
         description: "Release tag label used on VPS release dir"
         required: false
@@ -88,6 +93,14 @@ jobs:
           repository: gillohner/eventky-app-specs
           ref: ${{ inputs.eventky_app_specs_ref || 'master' }}
           path: eventky-app-specs
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+
+      - name: Checkout pubky app specs
+        uses: actions/checkout@v5
+        with:
+          repository: pubky/pubky-app-specs
+          ref: ${{ inputs.pubky_app_specs_ref || 'main' }}
+          path: pubky-app-specs
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
 
       - name: Setup Rust
