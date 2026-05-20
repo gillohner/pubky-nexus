@@ -18,6 +18,16 @@ on:
         required: false
         default: "main"
         type: string
+      mapky_app_specs_ref:
+        description: "mapky-app-specs ref"
+        required: false
+        default: "master"
+        type: string
+      eventky_app_specs_ref:
+        description: "eventky-app-specs ref"
+        required: false
+        default: "master"
+        type: string
       release_tag:
         description: "Release tag label used on VPS release dir"
         required: false
@@ -56,12 +66,28 @@ jobs:
           path: mapky/mapky-nexus-plugin
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
 
+      - name: Checkout mapky app specs
+        uses: actions/checkout@v5
+        with:
+          repository: gillohner/mapky-app-specs
+          ref: ${{ inputs.mapky_app_specs_ref || 'master' }}
+          path: mapky/mapky-app-specs
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+
       - name: Checkout eventky plugin
         uses: actions/checkout@v5
         with:
           repository: gillohner/eventky-nexus-plugin
           ref: ${{ inputs.eventky_plugin_ref || 'main' }}
           path: eventky-nexus-plugin
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+
+      - name: Checkout eventky app specs
+        uses: actions/checkout@v5
+        with:
+          repository: gillohner/eventky-app-specs
+          ref: ${{ inputs.eventky_app_specs_ref || 'master' }}
+          path: eventky-app-specs
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
 
       - name: Setup Rust
