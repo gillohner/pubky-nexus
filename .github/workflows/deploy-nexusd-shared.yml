@@ -139,18 +139,19 @@ jobs:
           set -euo pipefail
           REMOTE_REL="/srv/nexusd/releases/${TAG}"
 
-          ssh -i ~/.ssh/deploy -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" "mkdir -p '${REMOTE_REL}'"
+          ssh -i ~/.ssh/deploy -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" "sudo mkdir -p '${REMOTE_REL}'"
 
           rsync -az --chmod=F0755 \
             -e "ssh -i ~/.ssh/deploy -p ${SSH_PORT}" \
+            --rsync-path="sudo rsync" \
             pubky-nexus/target/release/nexusd \
             "${SSH_USER}@${SSH_HOST}:${REMOTE_REL}/nexusd"
 
           ssh -i ~/.ssh/deploy -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" bash -se <<EOF
           set -euo pipefail
-          ln -sfn '${REMOTE_REL}' /srv/nexusd/current.new
-          mv -Tf /srv/nexusd/current.new /srv/nexusd/current
-          ls -1dt /srv/nexusd/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
+          sudo ln -sfn '${REMOTE_REL}' /srv/nexusd/current.new
+          sudo mv -Tf /srv/nexusd/current.new /srv/nexusd/current
+          sudo sh -c "ls -1dt /srv/nexusd/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf"
           sudo /usr/bin/systemctl restart nexusd
           EOF
 
