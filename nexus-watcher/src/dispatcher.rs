@@ -86,12 +86,15 @@ impl EventDispatcher {
             return Ok(false);
         }
 
-        // App-specific files/blobs use universal Nexus file handling. Let them
-        // fall through instead of requiring every plugin to duplicate file logic.
+        // App-specific files/blobs/tags use universal Nexus handling. Let them
+        // fall through instead of requiring every plugin to duplicate core logic.
         let resource_suffix = path
             .strip_prefix(matching[0].manifest().namespace)
             .unwrap_or(path);
-        if resource_suffix.starts_with("files/") || resource_suffix.starts_with("blobs/") {
+        if resource_suffix.starts_with("files/")
+            || resource_suffix.starts_with("blobs/")
+            || resource_suffix.starts_with("tags/")
+        {
             return Ok(false);
         }
 
@@ -285,12 +288,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_dispatch_tag_path_reaches_plugin() {
+    async fn test_try_dispatch_tag_path_falls_through() {
         let dispatcher = EventDispatcher::new(vec![Arc::new(MockPlugin) as Arc<dyn NexusPlugin>]);
         let result = dispatcher
             .try_dispatch("DEL pubky://abc123/pub/mock.app/tags/tag1")
             .await;
-        assert!(matches!(result, Ok(true)));
+        assert!(matches!(result, Ok(false)));
     }
 
     #[test]
