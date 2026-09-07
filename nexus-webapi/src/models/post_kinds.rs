@@ -1,32 +1,31 @@
+use nexus_common::models::post::PostKind;
 use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::models::bounded_vec;
-use pubky_app_specs::PubkyAppPostKind;
 
 /// Comma-separated list of post kinds (min=1, max=7 tokens; duplicates are
-/// dropped, order preserved). Parsing is strict: values outside the known
-/// kinds (short, long, image, video, link, file, collection) are rejected,
-/// unlike the lenient single `kind` param which falls back to `Unknown`.
+/// dropped, order preserved). Uses the same case-sensitive kind vocabulary
+/// as the single `kind` filter, including custom values.
 #[derive(Debug, ToSchema)]
 #[schema(value_type = String, example = "collection,link")]
-pub struct PostKinds(pub Vec<PubkyAppPostKind>);
+pub struct PostKinds(pub Vec<PostKind>);
 
 /// `deserialize_csv` requires `TryFrom<String>`; delegate to the strict
-/// `FromStr` of the specs enum (case-insensitive on our side).
-struct KindToken(PubkyAppPostKind);
+/// `FromStr` of the shared kind type.
+struct KindToken(PostKind);
 
 impl TryFrom<String> for KindToken {
     type Error = String;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.to_lowercase().parse::<PubkyAppPostKind>().map(KindToken)
+        s.parse::<PostKind>().map(KindToken)
     }
 }
 
 impl<'de> Deserialize<'de> for PostKinds {
     fn deserialize<D: serde::de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let tokens = bounded_vec::deserialize_csv::<KindToken, D, 1, 7>(d)?;
-        let mut kinds: Vec<PubkyAppPostKind> = Vec::with_capacity(tokens.len());
+        let mut kinds: Vec<PostKind> = Vec::with_capacity(tokens.len());
         for KindToken(kind) in tokens {
             if !kinds.contains(&kind) {
                 kinds.push(kind);
@@ -47,43 +46,35 @@ mod tests {
     #[test]
     fn single_kind() {
         let kinds = parse("collection").unwrap();
-        assert_eq!(kinds.0, vec![PubkyAppPostKind::Collection]);
+        assert_eq!(kinds.0, vec![PostKind::Collection]);
     }
 
     #[test]
     fn multiple_kinds_with_whitespace() {
         let kinds = parse("collection, link").unwrap();
-        assert_eq!(
-            kinds.0,
-            vec![PubkyAppPostKind::Collection, PubkyAppPostKind::Link]
-        );
+        assert_eq!(kinds.0, vec![PostKind::Collection, PostKind::Link]);
     }
 
     #[test]
-    fn case_insensitive() {
+    fn preserves_case() {
         let kinds = parse("Collection").unwrap();
-        assert_eq!(kinds.0, vec![PubkyAppPostKind::Collection]);
+        assert_eq!(kinds.0, vec!["Collection".parse::<PostKind>().unwrap()]);
     }
 
     #[test]
-    fn rejects_unrecognized_value() {
-        assert!(parse("bogus").is_err());
+    fn accepts_custom_value() {
+        assert_eq!(parse("event").unwrap().0[0].as_str(), "event");
     }
 
     #[test]
-    fn rejects_unknown_variant() {
-        // `unknown` is the serde catch-all, not a real kind; the strict
-        // parser must reject it so exclusion lists can't target it.
-        assert!(parse("unknown").is_err());
+    fn accepts_literal_unknown() {
+        assert_eq!(parse("unknown").unwrap().0, vec![PostKind::Unknown]);
     }
 
     #[test]
     fn deduplicates_preserving_order() {
         let kinds = parse("collection,link,collection").unwrap();
-        assert_eq!(
-            kinds.0,
-            vec![PubkyAppPostKind::Collection, PubkyAppPostKind::Link]
-        );
+        assert_eq!(kinds.0, vec![PostKind::Collection, PostKind::Link]);
     }
 
     #[test]

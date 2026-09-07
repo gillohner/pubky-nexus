@@ -242,10 +242,9 @@ async fn test_exclude_kinds_post_keys_with_cursor() -> Result<()> {
 #[tokio_shared_rt::test(shared)]
 async fn test_exclude_kinds_rejects_invalid_values() -> Result<()> {
     for path in [
-        // Unrecognized kind: strict parsing, unlike the lenient `kind` param.
-        format!("{ROOT_PATH}?exclude_kinds=bogus"),
-        // `unknown` is the serde catch-all, not an excludable kind.
-        format!("{ROOT_PATH}?exclude_kinds=unknown"),
+        // Kind identifiers cannot contain whitespace or be empty.
+        format!("{ROOT_PATH}?exclude_kinds=bad%20kind"),
+        format!("{ROOT_PATH}?exclude_kinds="),
         // Mutually exclusive with `kind`.
         format!("{ROOT_PATH}?kind=short&exclude_kinds=collection"),
         // Incompatible with the curator-ordered collection source.

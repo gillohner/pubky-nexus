@@ -1,3 +1,4 @@
+use crate::models::post::PostKind;
 use std::sync::Arc;
 
 use super::{Bookmark, PostCounts, PostDetails, PostView};
@@ -12,7 +13,7 @@ use crate::models::{
 use crate::types::{DomainTrust, Pagination, StreamSorting, WotDepth};
 use futures::stream::{self, StreamExt};
 use futures::TryStreamExt;
-use pubky_app_specs::{ParsedUri, PubkyAppCollectionContent, PubkyAppPostKind, Resource};
+use pubky_app_specs::{ParsedUri, PubkyAppCollectionContent, Resource};
 use serde::{Deserialize, Serialize};
 use tokio::task::spawn;
 use tokio::time::{timeout, Duration};
@@ -136,10 +137,10 @@ impl StreamSource {
 #[derive(Debug, Clone, PartialEq)]
 pub enum KindFilter {
     /// Only posts of exactly this kind.
-    Kind(PubkyAppPostKind),
+    Kind(PostKind),
     /// Posts of any kind except the listed ones. Posts with a missing (NULL)
-    /// or unrecognized ("unknown") kind are never excluded.
-    Exclude(Vec<PubkyAppPostKind>),
+    /// kind are never excluded; the literal "unknown" is an ordinary custom kind.
+    Exclude(Vec<PostKind>),
 }
 
 #[derive(Serialize, Deserialize, ToSchema, Debug, Default, Clone)]
@@ -366,7 +367,7 @@ impl PostStream {
         let Some(details) = PostDetails::get_by_id(author_id, post_id).await? else {
             return Ok(PostKeyStream::default());
         };
-        if !matches!(details.kind, PubkyAppPostKind::Collection) {
+        if !matches!(details.kind, PostKind::Collection) {
             return Ok(PostKeyStream::default());
         }
         let envelope: PubkyAppCollectionContent = match serde_json::from_str(&details.content) {
@@ -907,13 +908,13 @@ mod tests {
     #[test]
     fn test_can_use_index_returns_false_for_any_kind_filter() {
         let kinds_to_test = [
-            PubkyAppPostKind::Short,
-            PubkyAppPostKind::Long,
-            PubkyAppPostKind::Image,
-            PubkyAppPostKind::Video,
-            PubkyAppPostKind::Link,
-            PubkyAppPostKind::File,
-            PubkyAppPostKind::Collection,
+            PostKind::Short,
+            PostKind::Long,
+            PostKind::Image,
+            PostKind::Video,
+            PostKind::Link,
+            PostKind::File,
+            PostKind::Collection,
         ];
 
         // Combinations that would normally return `true` when kind is None.

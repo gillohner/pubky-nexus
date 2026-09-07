@@ -120,6 +120,19 @@ pub async fn handle_put_event(
 
     let resource = event.parsed_uri.resource().clone();
 
+    // Capture custom kinds before the specs enum collapses them to Unknown.
+    if let Resource::Post(post_id) = &resource {
+        let post = nexus_common::models::post::PostInput::from_bytes(&blob, post_id)
+            .map_err(EventProcessorError::SpecValidation)?;
+        return handlers::post::sync_put(
+            post,
+            event.parsed_uri.user_id().clone(),
+            post_id.clone(),
+            &ingestor,
+        )
+        .await;
+    }
+
     // Use the new importer from pubky-app-specs.
     // `from_resource` runs spec validation; failures are deterministic and must
     // not be retried (a re-run produces the same error). Classify them as

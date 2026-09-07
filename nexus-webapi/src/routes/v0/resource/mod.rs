@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use utoipa::{OpenApi, ToSchema};
 
-/// Max length for URI used in raw URI lookup
-const MAX_URI_LENGTH: usize = 2048;
+/// Enough UTF-8 bytes for a 1,024-character universal embed.
+const MAX_URI_LENGTH: usize = 4096;
 
 /// Response envelope for resource tag endpoints, matching spec Section 9.1.
 #[derive(Serialize, Deserialize, Debug, ToSchema)]

@@ -5,7 +5,7 @@ use crate::routes::Path;
 use crate::{Error, Result};
 use axum::Json;
 use nexus_common::models::post::PostDetails;
-use pubky_app_specs::PubkyAppPostKind;
+use nexus_common::models::post::PostKind;
 use tracing::debug;
 use utoipa::OpenApi;
 
@@ -42,6 +42,6 @@ pub async fn post_details_handler(
 #[derive(OpenApi)]
 #[openapi(
     paths(post_details_handler),
-    components(schemas(PostDetails, PubkyAppPostKind, PubkyId, PostId))
+    components(schemas(PostDetails, PostKind, PubkyId, PostId))
 )]
 pub struct PostDetailsApiDoc;

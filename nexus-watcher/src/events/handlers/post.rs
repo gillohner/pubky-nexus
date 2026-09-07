@@ -1,4 +1,6 @@
 use crate::events::EventProcessorError;
+use nexus_common::models::post::PostInput;
+use nexus_common::models::post::PostKind;
 
 use nexus_common::db::queries::get::post_is_safe_to_delete;
 use nexus_common::db::{exec_single_row, execute_graph_operation, OperationOutcome};
@@ -8,29 +10,31 @@ use nexus_common::models::post::{
     PostCounts, PostDetails, PostRelationships, PostStream, POST_TOTAL_ENGAGEMENT_KEY_PARTS,
 };
 use nexus_common::models::user::{UserCounts, UserIngestor};
-use pubky_app_specs::{
-    post_uri_builder, ParsedUri, PubkyAppCollectionContent, PubkyAppPost, PubkyAppPostKind,
-    PubkyId, Resource,
-};
+use pubky_app_specs::{post_uri_builder, ParsedUri, PubkyAppCollectionContent, PubkyId, Resource};
 use tracing::{debug, Instrument};
 
 use super::utils::{fail_on_blacklisted_hs, post_kind, post_relationships_is_reply};
 
 #[tracing::instrument(name = "post.put", skip_all, fields(user_id = %author_id, post_id = %post_id))]
 pub async fn sync_put(
-    post: PubkyAppPost,
+    post: impl Into<PostInput>,
     author_id: PubkyId,
     post_id: String,
     ingestor: &UserIngestor,
 ) -> Result<(), EventProcessorError> {
     debug!("Indexing post");
+    let post = post.into();
     // Create PostDetails object
     let post_details = PostDetails::from_homeserver(post.clone(), &author_id, &post_id);
     // We avoid indexing replies into global feed sorted sets
     let is_reply = post.parent.is_some();
-    let is_collection = post.kind == PubkyAppPostKind::Collection;
+    let is_collection = post.kind == PostKind::Collection;
     // PRE-INDEX operation, identify the post relationship
     let mut post_relationships = PostRelationships::from_homeserver(&post);
+
+    // Keep the prior repost target available until both graph and cache updates
+    // complete. A retry reads the same cached target and safely recomputes counts.
+    let previous_relationships = PostRelationships::get_by_id(&author_id, &post_id).await?;
 
     let existed = match post_details.put_to_graph(&post_relationships).await? {
         OperationOutcome::CreatedOrDeleted => false,
@@ -69,10 +73,22 @@ pub async fn sync_put(
     };
 
     if existed {
+        if let Some(previous) = &previous_relationships {
+            refresh_repost_targets(previous, &post_relationships).await?;
+        }
+        if post.kind.known().is_some() {
+            post_relationships.mentioned = previous_relationships
+                .as_ref()
+                .map(|r| r.mentioned.clone())
+                .unwrap_or_default();
+        }
+        post_relationships
+            .put_to_index(&author_id, &post_id)
+            .await?;
         // If the post existed, let's confirm this is an edit. Is the content different?
         match PostDetails::get_from_index(&author_id, &post_id).await? {
             Some(existing_details) => {
-                let was_collection = existing_details.kind == PubkyAppPostKind::Collection;
+                let was_collection = existing_details.kind == PostKind::Collection;
                 // Persist the new PostDetails (incl. kind) BEFORE moving the
                 // `collections` counter. If the counter moved first and a later
                 // step failed, a retry would re-read the old kind, see the same
@@ -299,6 +315,22 @@ pub async fn sync_put(
     Ok(())
 }
 
+async fn refresh_repost_targets(
+    previous: &PostRelationships,
+    current: &PostRelationships,
+) -> Result<(), EventProcessorError> {
+    for target in [&previous.reposted, &current.reposted]
+        .into_iter()
+        .flatten()
+    {
+        if let Resource::Post(id) = &target.resource {
+            // Recompute, rather than increment/decrement, so retries cannot drift.
+            PostCounts::reindex(&target.user_id, id).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Re-runs idempotent post index writes when a previous `sync_put` attempt
 /// successfully wrote the graph node but failed before persisting the Redis
 /// index entries. MENTIONED edges are also re-merged because the original
@@ -345,7 +377,9 @@ async fn recover_post_index_state(
 
     // Re-merge any MENTIONED graph edges that the original mention loop
     // didn't finish. Skips notifications (0 > N on retry).
-    merge_mention_edges(author_id, post_id, &post_details.content).await?;
+    if post_details.kind.known().is_some() {
+        merge_mention_edges(author_id, post_id, &post_details.content).await?;
+    }
 
     // Reindex all Redis state from graph truth.
     let (details_result, relationships_result, counts_result) = nexus_common::traced_join!(
@@ -362,13 +396,13 @@ async fn recover_post_index_state(
 }
 
 async fn sync_edit(
-    post: &PubkyAppPost,
+    post: &PostInput,
     author_id: PubkyId,
     post_id: String,
     post_details: PostDetails,
     ingestor: &UserIngestor,
     notify: bool,
-    was_kind: PubkyAppPostKind,
+    was_kind: PostKind,
 ) -> Result<(), EventProcessorError> {
     // Refresh the cached details (always, even for a lock-only toggle).
     post_details.put_to_index(&author_id, None, true).await?;
@@ -432,8 +466,11 @@ pub async fn put_mentioned_relationships(
     post_id: &str,
     content: &str,
     relationships: &mut PostRelationships,
-    post_kind: PubkyAppPostKind,
+    post_kind: PostKind,
 ) -> Result<(), EventProcessorError> {
+    if post_kind.known().is_none() {
+        return Ok(());
+    }
     // TODO Deprecate, drop support for pk: support in an upcoming release
     // Backwards compatibility: identify user references with "pk:" prefix
     put_mentioned_relationships_for_prefix(
@@ -466,7 +503,7 @@ async fn put_mentioned_relationships_for_prefix(
     content: &str,
     relationships: &mut PostRelationships,
     prefix: &str,
-    post_kind: PubkyAppPostKind,
+    post_kind: PostKind,
 ) -> Result<(), EventProcessorError> {
     for pubky_id in find_mentioned_ids(content, prefix) {
         // Create the MENTIONED relationship in the graph
@@ -517,8 +554,8 @@ async fn merge_mention_edges(
 /// Best-effort ingestion of the user of every URI in a Collection's
 /// `items` envelope. No-op for non-Collection posts; failures (malformed URI,
 /// blacklisted HS) are logged and skipped so the Collection is still indexed.
-async fn ingest_collection_item_authors(post: &PubkyAppPost, ingestor: &UserIngestor) {
-    if post.kind != PubkyAppPostKind::Collection {
+async fn ingest_collection_item_authors(post: &PostInput, ingestor: &UserIngestor) {
+    if post.kind != PostKind::Collection {
         return;
     }
     let Ok(envelope) = serde_json::from_str::<PubkyAppCollectionContent>(&post.content) else {
@@ -563,11 +600,11 @@ pub async fn del(
                 .and_then(|replied_uri| replied_uri.try_to_uri_str().ok());
 
             // We store a dummy that is still a reply if it was one already.
-            let dummy_deleted_post = PubkyAppPost {
+            let dummy_deleted_post = PostInput {
                 content: "[DELETED]".to_string(),
                 parent,
                 embed: None,
-                kind: PubkyAppPostKind::Short,
+                kind: PostKind::Short,
                 attachments: None,
                 lock: None,
             };
@@ -599,9 +636,9 @@ pub async fn sync_del(author_id: PubkyId, post_id: String) -> Result<(), EventPr
     let deleted_kind = if post_in_index {
         post_kind(&author_id, &post_id).await?
     } else {
-        PubkyAppPostKind::Unknown
+        PostKind::Unknown
     };
-    let is_collection = deleted_kind == PubkyAppPostKind::Collection;
+    let is_collection = deleted_kind == PostKind::Collection;
 
     // 2. Atomically commit the cleanup decision: remove the gate as the very
     //    first mutation. Subsequent retries will observe `post_in_index = false`

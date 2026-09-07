@@ -1,11 +1,13 @@
+use super::PostInput;
 use super::{PostRelationships, PostStream};
 use crate::db::kv::RedisResult;
 use crate::db::{
     execute_graph_operation, fetch_row_from_graph, queries, GraphResult, OperationOutcome, RedisOps,
 };
 use crate::models::error::ModelResult;
+use crate::models::post::PostKind;
 use chrono::Utc;
-use pubky_app_specs::{post_uri_builder, PubkyAppPost, PubkyAppPostKind, PubkyId};
+use pubky_app_specs::{post_uri_builder, PubkyId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -19,9 +21,12 @@ pub struct PostDetails {
     pub id: String,
     pub indexed_at: i64,
     pub author: String,
-    pub kind: PubkyAppPostKind,
+    pub kind: PostKind,
     pub uri: String,
     pub attachments: Option<Vec<String>>,
+    /// Original embed URI, independent of the normalized Resource identity.
+    #[serde(default)]
+    pub embed: Option<String>,
     /// `pubky://` URL of the lock server; `None` when the post is unlocked.
     /// `default` keeps pre-lock cached JSON (no `lock` key) deserializing.
     #[serde(default)]
@@ -108,10 +113,11 @@ impl PostDetails {
     }
 
     pub fn from_homeserver(
-        homeserver_post: PubkyAppPost,
+        homeserver_post: impl Into<PostInput>,
         author_id: &PubkyId,
         post_id: &str,
     ) -> Self {
+        let homeserver_post = homeserver_post.into();
         PostDetails {
             uri: post_uri_builder(author_id.to_string(), post_id.into()),
             content: homeserver_post.content,
@@ -120,6 +126,7 @@ impl PostDetails {
             author: author_id.to_string(),
             kind: homeserver_post.kind,
             attachments: homeserver_post.attachments,
+            embed: homeserver_post.embed,
             lock: homeserver_post.lock,
         }
     }
@@ -176,7 +183,9 @@ impl PostDetails {
     /// True when the post's visible content (content or attachments) changed.
     /// Deliberately excludes `lock` so a lock toggle is not treated as a content edit.
     pub fn content_differs_from(&self, other: &PostDetails) -> bool {
-        self.content != other.content || self.attachments != other.attachments
+        self.content != other.content
+            || self.attachments != other.attachments
+            || self.embed != other.embed
     }
 
     /// True when any cached field changed and the index needs refreshing. Unlike
@@ -190,7 +199,6 @@ impl PostDetails {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pubky_app_specs::PubkyAppPostKind;
 
     #[tokio_shared_rt::test(shared)]
     async fn test_is_different_than() {
@@ -200,9 +208,10 @@ mod tests {
             id: "post1".into(),
             indexed_at: 123456789,
             author: "author1".into(),
-            kind: PubkyAppPostKind::Short,
+            kind: PostKind::Short,
             uri: "uri1".into(),
             attachments: Some(vec!["image1.jpg".into(), "image2.jpg".into()]),
+            embed: None,
             lock: None,
         };
 
@@ -234,6 +243,7 @@ mod tests {
         // Test with no attachments
         let no_attachments_post = PostDetails {
             attachments: None,
+            embed: None,
             ..base_post.clone()
         };
         assert!(base_post.is_different_than(&no_attachments_post));
@@ -271,9 +281,10 @@ mod tests {
             id: "p".into(),
             indexed_at: 1,
             author: "a".into(),
-            kind: PubkyAppPostKind::Short,
+            kind: PostKind::Short,
             uri: "u".into(),
             attachments: None,
+            embed: None,
             lock: None,
         };
         let locked = PostDetails {

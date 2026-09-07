@@ -2,6 +2,7 @@ use crate::db::graph::error::{GraphError, GraphResult};
 use crate::db::graph::Query;
 use crate::models::post::PostRelationships;
 use crate::models::{file::FileDetails, post::PostDetails, user::UserDetails};
+use crate::universal_tag::normalize::{normalize_uri, resource_id};
 use pubky_app_specs::{ParsedUri, Resource};
 
 /// Create a user node
@@ -56,6 +57,29 @@ pub fn create_post(
         MATCH (author:User {id: $author_id})
         OPTIONAL MATCH (u)-[:AUTHORED]->(existing_post:Post {id: $post_id})
         MERGE (author)-[:AUTHORED]->(new_post:Post {id: $post_id})
+        ON CREATE SET new_post.indexed_at = $indexed_at
+        // Preserve the already-checked reply/repost dependencies across updates.
+        WITH *
+        CALL {
+            WITH new_post
+            OPTIONAL MATCH (new_post)-[old:EMBEDS]->(target:Resource)
+            WHERE $resource_id IS NULL OR target.id <> $resource_id
+            DELETE old
+            WITH DISTINCT target
+            WHERE target IS NOT NULL AND NOT EXISTS { (target)--() }
+            DELETE target
+        }
+        CALL {
+            WITH new_post
+            OPTIONAL MATCH (new_post)-[old:REPOSTED]->(:Post)
+            DELETE old
+        }
+        CALL {
+            WITH new_post
+            WITH new_post WHERE $opaque_content
+            OPTIONAL MATCH (new_post)-[mention:MENTIONED]->(:User)
+            DELETE mention
+        }
     ",
     );
 
@@ -64,28 +88,52 @@ pub fn create_post(
 
     cypher.push_str(
         "
-        // Set indexed_at only on creation
-        ON CREATE SET
-            new_post.indexed_at = $indexed_at
         SET new_post.content = $content,
             new_post.kind = $kind,
             new_post.attachments = $attachments,
-            new_post.lock = $lock
+            new_post.lock = $lock,
+            new_post.embed = $embed
+        WITH new_post, existing_post
+        CALL {
+            WITH new_post
+            WITH new_post WHERE $resource_id IS NOT NULL
+            MERGE (r:Resource {id: $resource_id})
+            ON CREATE SET r.uri = $resource_uri, r.scheme = $resource_scheme, r.indexed_at = $indexed_at
+            MERGE (new_post)-[:EMBEDS {app: 'pubky.app'}]->(r)
+        }
         RETURN existing_post IS NOT NULL AS flag",
     );
 
-    let kind = serde_json::to_string(&post.kind)
-        .map_err(|e| GraphError::SerializationFailed(Box::new(e)))?;
-
+    let embedded_resource = post
+        .embed
+        .as_deref()
+        .filter(|_| post_relationships.reposted.is_none())
+        .map(normalize_uri)
+        .transpose()
+        .map_err(GraphError::UriParseError)?;
     let mut cypher_query = Query::new("create_post", &cypher)
         .param("author_id", post.author.to_string())
         .param("post_id", post.id.to_string())
         .param("content", post.content.to_string())
         .param("indexed_at", post.indexed_at)
-        .param("kind", kind.trim_matches('"'))
+        .param("kind", post.kind.as_str())
+        .param("opaque_content", post.kind.known().is_none())
         .param("attachments", post.attachments.clone().unwrap_or_default())
         // Pass Option directly so None clears the property; "" would read back as Some("").
-        .param("lock", post.lock.clone());
+        .param("lock", post.lock.clone())
+        .param("embed", post.embed.clone())
+        .param(
+            "resource_id",
+            embedded_resource.as_ref().map(|(uri, _)| resource_id(uri)),
+        )
+        .param(
+            "resource_uri",
+            embedded_resource.as_ref().map(|(uri, _)| uri.clone()),
+        )
+        .param(
+            "resource_scheme",
+            embedded_resource.map(|(_, scheme)| scheme),
+        );
 
     // Handle "replied" relationship
     cypher_query = add_relationship_params(
