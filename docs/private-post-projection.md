@@ -96,6 +96,8 @@ Mention notification insertion uses native Redis `ZADD NX` with the complete not
 
 ## Validation
 
+Mutation outcomes consume the complete Neo4j result before updating downstream state. A server-confirmed `Neo.TransientError.Transaction.DeadlockDetected` rollback retries the same query at most three times, after 50, 100 and 200 milliseconds. This includes failures received during PULL with neo4rs 0.8. Connection failures and other errors are not retried at this boundary because their commit outcome may be unknown. Deterministic regression tests cover partial-result rollback, retry limits and ambiguous failures (`cargo test -p nexus-common --lib db::graph::exec::retry`).
+
 The focused tests cover decimal revision precision and reset boundaries, disabled/missing/incorrect/valid bearer tokens, and generic mention extraction. An explicitly enabled watcher integration test covers graph/cache reconciliation and notification idempotence against disposable Neo4j and Redis services. The graph integration test covers immutable source payloads, rollback, concurrent writers, revision retention and the user-deletion guard. It requires a fresh isolated graph; do not run it against an existing instance.
 
 The separate `retention_floor_is_monotonic_in_rollback_only_fixtures` common-library test verifies actual Cypher pruning before and after an epoch reset using random checkpoint IDs and epochs. It rolls back all writes and checks that no fixture nodes remain, so it does not require an empty test graph. Enable it explicitly with `NEXUS_PROJECTION_TEST_URI=127.0.0.1:17687` and the test runner's `--ignored` flag.
