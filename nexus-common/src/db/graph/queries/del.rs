@@ -20,7 +20,7 @@ pub fn delete_post(author_id: &str, post_id: &str) -> Query {
     Query::new(
         "delete_post",
         "MATCH (u:User {id: $author_id})-[:AUTHORED]->(p:Post {id: $post_id})
-         OPTIONAL MATCH (p)-[:EMBEDS]->(resource:Resource)
+         OPTIONAL MATCH (p)-[:EMBEDS|REPLIED]->(resource:Resource)
          WITH p, collect(resource) AS resources
          DETACH DELETE p
          WITH resources UNWIND resources AS resource

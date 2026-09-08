@@ -1,6 +1,4 @@
-use pubky_app_specs::{
-    traits::Validatable, ParsedUri, PubkyAppPost, PubkyAppPostEmbed, PubkyAppPostKind, Resource,
-};
+use pubky_app_specs::{traits::Validatable, PubkyAppPost, PubkyAppPostEmbed, PubkyAppPostKind};
 use serde::{Deserialize, Deserializer};
 
 use super::PostKind;
@@ -13,6 +11,7 @@ pub const MAX_CUSTOM_POST_BYTES: usize = 512 * 1024;
 pub struct PostInput {
     pub content: String,
     pub kind: PostKind,
+    #[serde(default, deserialize_with = "deserialize_reference")]
     pub parent: Option<String>,
     #[serde(default, deserialize_with = "deserialize_embed")]
     pub embed: Option<String>,
@@ -30,7 +29,7 @@ impl PostInput {
         let sanitized = PubkyAppPost {
             content: post.content.clone(),
             kind: post.kind.known().unwrap_or(PubkyAppPostKind::Short),
-            parent: post.parent.take(),
+            parent: post.parent.as_ref().map(|_| validation_parent()),
             attachments: post.attachments.take(),
             lock: post.lock.take(),
             embed: None,
@@ -39,7 +38,6 @@ impl PostInput {
         if post.kind.known().is_some() {
             post.content = sanitized.content;
         }
-        post.parent = sanitized.parent;
         post.attachments = sanitized.attachments;
         post.lock = sanitized.lock;
         post.validate(id)?;
@@ -47,12 +45,6 @@ impl PostInput {
     }
 
     fn validate(&self, id: &str) -> Result<(), String> {
-        if let Some(parent) = &self.parent {
-            let uri = ParsedUri::try_from(parent.as_str())?;
-            if !matches!(uri.resource, Resource::Post(_)) {
-                return Err("post parent must reference a Pubky post".into());
-            }
-        }
         if self.content == "[DELETED]" {
             return Err("post content cannot be the reserved deletion marker".into());
         }
@@ -71,7 +63,7 @@ impl PostInput {
                 "custom".into()
             },
             kind: known.unwrap_or(PubkyAppPostKind::Short),
-            parent: self.parent.clone(),
+            parent: self.parent.as_ref().map(|_| validation_parent()),
             embed: self.embed.as_ref().map(|_| PubkyAppPostEmbed {
                 kind: PubkyAppPostKind::Link,
                 uri: "https://example.com/".into(),
@@ -107,7 +99,7 @@ fn deserialize_embed<'de, D: Deserializer<'de>>(
     }
     Option::<Embed>::deserialize(deserializer)?
         .map(|embed| match embed {
-            Embed::Uri(uri) => universal_embed(&uri),
+            Embed::Uri(uri) => universal_reference(&uri),
             // Legacy objects retain v0 validation and URL cleanup; the kind is not
             // carried into the new output shape.
             Embed::Legacy(embed) => {
@@ -129,20 +121,31 @@ fn deserialize_embed<'de, D: Deserializer<'de>>(
         .map_err(serde::de::Error::custom)
 }
 
+fn deserialize_reference<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|uri| universal_reference(&uri))
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
 /// RFC #142's universal URI gate, with the current public Pubky path grammar.
 /// Normalization for Resource identity is deliberately a separate operation.
-fn universal_embed(value: &str) -> Result<String, String> {
+fn universal_reference(value: &str) -> Result<String, String> {
     let value = value.trim_matches(frozen_whitespace);
     if value.chars().count() > 1024
         || value
             .chars()
             .any(|c| c.is_ascii_control() || frozen_whitespace(c))
     {
-        return Err("embed must be at most 1024 characters without whitespace or controls".into());
+        return Err(
+            "reference must be at most 1024 characters without whitespace or controls".into(),
+        );
     }
     let (scheme, remainder) = value
         .split_once(':')
-        .ok_or("embed must have a URI scheme")?;
+        .ok_or("reference must have a URI scheme")?;
     if remainder.is_empty()
         || !scheme
             .as_bytes()
@@ -162,7 +165,7 @@ fn universal_embed(value: &str) -> Result<String, String> {
             || url.password().is_some()
             || !url.path().starts_with("/pub/")
         {
-            return Err("Pubky embeds must reference public storage".into());
+            return Err("Pubky references must reference public storage".into());
         }
         url.host_str()
             .ok_or("missing Pubky key")?
@@ -175,9 +178,14 @@ fn universal_embed(value: &str) -> Result<String, String> {
             .strip_prefix("//")
             .is_some_and(|host| !host.is_empty() && !host.starts_with('/'))
     {
-        return Err("web embed must contain a host".into());
+        return Err("web reference must contain a host".into());
     }
     Ok(format!("{scheme}:{remainder}"))
+}
+
+fn validation_parent() -> String {
+    "pubky://8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo/pub/pubky.app/posts/003286NSMY490"
+        .into()
 }
 
 fn frozen_whitespace(c: char) -> bool {
@@ -222,20 +230,34 @@ mod tests {
             ("ipfs://CID", "ipfs://CID"),
             ("https://Example.com", "https://Example.com"),
         ] {
-            assert_eq!(universal_embed(input).unwrap(), expected);
+            assert_eq!(universal_reference(input).unwrap(), expected);
         }
         for invalid in ["https:///", "geo:", "1geo:a", "https://a\nb", "no-scheme"] {
-            assert!(universal_embed(invalid).is_err(), "{invalid}");
+            assert!(universal_reference(invalid).is_err(), "{invalid}");
         }
     }
 
     #[test]
-    fn pubky_embeds_must_be_public() {
+    fn pubky_references_must_be_public() {
         let key = "8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo";
-        assert!(universal_embed(&format!("pubky://{key}/pub/mapky/places/one")).is_ok());
-        assert!(universal_embed(&format!("pubky://{key}/priv/mapky/places/one")).is_err());
-        assert!(universal_embed("pubky://invalid/pub/mapky/places/one").is_err());
-        assert!(universal_embed("pubky+private:secret").is_err());
+        assert!(universal_reference(&format!("pubky://{key}/pub/mapky/places/one")).is_ok());
+        assert!(universal_reference(&format!("pubky://{key}/priv/mapky/places/one")).is_err());
+        assert!(universal_reference("pubky://invalid/pub/mapky/places/one").is_err());
+        assert!(universal_reference("pubky+private:secret").is_err());
+    }
+
+    #[test]
+    fn parent_and_embed_use_the_same_universal_reference_rules() {
+        let uri = "geo:52.52,13.405";
+        let post = parse(serde_json::json!({
+            "kind":"event",
+            "content":"picnic",
+            "parent":uri,
+            "embed":uri
+        }))
+        .unwrap();
+        assert_eq!(post.parent.as_deref(), Some(uri));
+        assert_eq!(post.embed.as_deref(), Some(uri));
     }
 
     #[test]
@@ -260,11 +282,10 @@ mod tests {
     }
 
     #[test]
-    fn retains_builtin_validation_and_parent_rules() {
+    fn retains_builtin_validation_rules() {
         for value in [
             serde_json::json!({"kind":"short", "content":"x".repeat(6000)}),
             serde_json::json!({"kind":"collection", "content":"not json"}),
-            serde_json::json!({"kind":"event", "content":"x", "parent":"https://example.com"}),
             serde_json::json!({"kind":"event", "content":{}}),
             serde_json::json!({"kind":"event", "content":"[DELETED]"}),
             serde_json::json!({"kind":"event", "content":"x", "attachments":["javascript:x"]}),

@@ -2,8 +2,9 @@
 use anyhow::Result;
 use nexus_common::{
     config::StackConfig,
+    db::graph::Query,
     db::kv::SortOrder,
-    db::{exec_single_row, queries, RedisOps},
+    db::{exec_single_row, fetch_row_from_graph, queries, RedisOps},
     models::{
         post::search::{create_post_content_index, PostsByContentSearch},
         post::{
@@ -32,7 +33,19 @@ async fn put(
     content: &str,
     embed: Option<&str>,
 ) -> Result<()> {
-    let bytes = serde_json::to_vec(&json!({"kind":kind,"content":content,"embed":embed}))?;
+    put_with_references(author, id, kind, content, None, embed).await
+}
+
+async fn put_with_references(
+    author: &PubkyId,
+    id: &str,
+    kind: &str,
+    content: &str,
+    parent: Option<&str>,
+    embed: Option<&str>,
+) -> Result<()> {
+    let bytes =
+        serde_json::to_vec(&json!({"kind":kind,"content":content,"parent":parent,"embed":embed}))?;
     let input = PostInput::from_bytes(&bytes, id).map_err(anyhow::Error::msg)?;
     post::sync_put(input, author.clone(), id.into(), &UserIngestor::new([])).await?;
     Ok(())
@@ -98,6 +111,76 @@ async fn custom_posts_and_shared_embed_lifecycle() -> Result<()> {
     assert_eq!(rehydrated.indexed_at, cached.indexed_at);
     let resource_details = ResourceDetails::get_by_id(&resource).await?.unwrap();
     assert_eq!(resource_details.uri, normalized);
+
+    // Parent and embed can independently point to the same external Resource.
+    // The parent makes this a reply; the embed makes it a shared/reposted item.
+    let external_reply = PubkyAppPost::default().create_id();
+    put_with_references(
+        &author,
+        &external_reply,
+        "event",
+        "reply and share",
+        Some(&uri),
+        Some(&uri),
+    )
+    .await?;
+    let referenced = PostDetails::get_by_id(&author, &external_reply)
+        .await?
+        .unwrap();
+    assert_eq!(referenced.parent.as_deref(), Some(uri.as_str()));
+    assert_eq!(referenced.embed.as_deref(), Some(uri.as_str()));
+    let relationship_types: Vec<String> = fetch_row_from_graph(
+        Query::new(
+            "external_post_references",
+            "MATCH (:Post {id: $post_id})-[reference:REPLIED|EMBEDS]->(:Resource {id: $resource_id})
+             RETURN collect(type(reference)) AS relationship_types",
+        )
+        .param("post_id", external_reply.clone())
+        .param("resource_id", resource.clone()),
+    )
+    .await?
+    .unwrap()
+    .get("relationship_types")?;
+    assert!(relationship_types.contains(&"REPLIED".to_string()));
+    assert!(relationship_types.contains(&"EMBEDS".to_string()));
+    assert!(!keys(&author, None, 0, 10)
+        .await?
+        .contains(&format!("{author}:{external_reply}")));
+    post::del(author.clone(), external_reply, &UserIngestor::new([])).await?;
+    assert!(ResourceDetails::get_by_id(&resource).await?.is_some());
+
+    // Moving between a root post and an external reply updates feed membership
+    // and removes the parent-only Resource after the final reference is gone.
+    let movable = PubkyAppPost::default().create_id();
+    let parent_only_uri = format!("geo:52.52,13.405?q={movable}");
+    let parent_only_resource = resource_id(&normalize_uri(&parent_only_uri).unwrap().0);
+    put(&author, &movable, "event", "moving", None).await?;
+    assert!(keys(&author, None, 0, 10)
+        .await?
+        .contains(&format!("{author}:{movable}")));
+    put_with_references(
+        &author,
+        &movable,
+        "event",
+        "moving",
+        Some(&parent_only_uri),
+        None,
+    )
+    .await?;
+    assert!(!keys(&author, None, 0, 10)
+        .await?
+        .contains(&format!("{author}:{movable}")));
+    assert!(ResourceDetails::get_by_id(&parent_only_resource)
+        .await?
+        .is_some());
+    put(&author, &movable, "event", "moving", None).await?;
+    assert!(keys(&author, None, 0, 10)
+        .await?
+        .contains(&format!("{author}:{movable}")));
+    assert!(ResourceDetails::get_by_id(&parent_only_resource)
+        .await?
+        .is_none());
+    post::del(author.clone(), movable, &UserIngestor::new([])).await?;
 
     // Replaying does not create a second Resource or move its timeline position.
     put(&author, &first, "event", content, Some(&uri)).await?;
