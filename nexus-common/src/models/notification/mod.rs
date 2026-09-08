@@ -1,12 +1,11 @@
 use crate::db::kv::{RedisError, RedisResult, SortOrder};
 use crate::db::{fetch_all_rows_from_graph, queries, RedisOps};
 use crate::models::error::ModelResult;
+use crate::models::post::PostKind;
 use crate::types::Pagination;
 use chrono::Utc;
 use neo4rs::Row;
-use pubky_app_specs::{
-    bookmark_uri_builder, post_uri_builder, tag_uri_builder, PubkyAppPostKind, PubkyId,
-};
+use pubky_app_specs::{bookmark_uri_builder, post_uri_builder, tag_uri_builder, PubkyId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -26,8 +25,8 @@ pub enum PostChangedType {
     Deleted,
 }
 
-fn unknown_post_kind() -> PubkyAppPostKind {
-    PubkyAppPostKind::Unknown
+fn unknown_post_kind() -> PostKind {
+    PostKind::Unknown
 }
 
 #[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
@@ -53,7 +52,7 @@ pub enum NotificationBody {
         tag_label: String,
         post_uri: String,
         #[serde(default = "unknown_post_kind")]
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     },
     TagProfile {
         tagged_by: String,
@@ -64,7 +63,7 @@ pub enum NotificationBody {
         tag_label: String,
         post_uri: String,
         #[serde(default = "unknown_post_kind")]
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     },
     UntagProfile {
         untagged_by: String,
@@ -75,20 +74,20 @@ pub enum NotificationBody {
         parent_post_uri: String,
         reply_uri: String,
         #[serde(default = "unknown_post_kind")]
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     },
     Repost {
         reposted_by: String,
         embed_uri: String,
         repost_uri: String,
         #[serde(default = "unknown_post_kind")]
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     },
     Mention {
         mentioned_by: String,
         post_uri: String,
         #[serde(default = "unknown_post_kind")]
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     },
     PostDeleted {
         delete_source: PostChangedSource,
@@ -96,7 +95,7 @@ pub enum NotificationBody {
         deleted_uri: String,
         linked_uri: String,
         #[serde(default = "unknown_post_kind")]
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     },
     PostEdited {
         edit_source: PostChangedSource,
@@ -104,7 +103,7 @@ pub enum NotificationBody {
         edited_uri: String,
         linked_uri: String,
         #[serde(default = "unknown_post_kind")]
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     },
 }
 
@@ -220,7 +219,7 @@ impl Notification {
         author_id: &str,
         label: &str,
         post_uri: &str,
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     ) -> RedisResult<()> {
         if user_id == author_id {
             return Ok(());
@@ -256,7 +255,7 @@ impl Notification {
         author_id: &str,
         label: &str,
         post_uri: &str,
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     ) -> RedisResult<()> {
         if user_id == author_id {
             return Ok(());
@@ -292,7 +291,7 @@ impl Notification {
         parent_uri: &str,
         reply_uri: &str,
         parent_post_author: &str,
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     ) -> RedisResult<()> {
         if user_id == parent_post_author {
             return Ok(());
@@ -311,7 +310,7 @@ impl Notification {
         user_id: &PubkyId,
         mentioned_id: &PubkyId,
         post_id: &str,
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     ) -> RedisResult<Option<PubkyId>> {
         if user_id == mentioned_id {
             return Ok(None);
@@ -332,7 +331,7 @@ impl Notification {
         embed_uri: &str,
         repost_uri: &str,
         embed_post_author: &str,
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     ) -> RedisResult<()> {
         if user_id == embed_post_author {
             return Ok(());
@@ -354,7 +353,7 @@ impl Notification {
         changed_uri: &str,
         change_source: PostChangedSource,
         changed_type: &PostChangedType,
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     ) -> RedisResult<()> {
         if user_id == linked_post_author {
             return Ok(());
@@ -387,7 +386,7 @@ impl Notification {
         post_id: &str,
         changed_uri: &str,
         changed_type: &PostChangedType,
-        post_kind: PubkyAppPostKind,
+        post_kind: PostKind,
     ) -> ModelResult<()> {
         // Define the notification types and associated data
         let notification_types: Vec<(QueryFunction, PostChangedSource, ExtractFunction)> = vec![
@@ -481,7 +480,7 @@ mod tests {
         let body: NotificationBody = serde_json::from_str(old).unwrap();
         match body {
             NotificationBody::TagPost { post_kind, .. } => {
-                assert_eq!(post_kind, PubkyAppPostKind::Unknown);
+                assert_eq!(post_kind, PostKind::Unknown);
             }
             other => panic!("expected TagPost, got {other:?}"),
         }
@@ -490,8 +489,8 @@ mod tests {
     #[test]
     fn post_kind_round_trips_as_lowercase() {
         for (kind, wire) in [
-            (PubkyAppPostKind::Collection, "collection"),
-            (PubkyAppPostKind::Unknown, "unknown"),
+            (PostKind::Collection, "collection"),
+            (PostKind::Unknown, "unknown"),
         ] {
             let body = NotificationBody::TagPost {
                 tagged_by: "a".into(),

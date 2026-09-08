@@ -20,7 +20,12 @@ pub fn delete_post(author_id: &str, post_id: &str) -> Query {
     Query::new(
         "delete_post",
         "MATCH (u:User {id: $author_id})-[:AUTHORED]->(p:Post {id: $post_id})
-         DETACH DELETE p;",
+         OPTIONAL MATCH (p)-[:EMBEDS|REPLIED]->(resource:Resource)
+         WITH p, collect(resource) AS resources
+         DETACH DELETE p
+         WITH resources UNWIND resources AS resource
+         WITH resource WHERE NOT EXISTS { (resource)--() }
+         DELETE resource;",
     )
     .param("author_id", author_id.to_string())
     .param("post_id", post_id.to_string())
@@ -89,7 +94,7 @@ pub fn delete_tag(user_id: &str, tag_id: &str, app: Option<&str>) -> Query {
     CALL {{
         WITH target, resource_id
         WITH target, resource_id WHERE resource_id IS NOT NULL
-        AND NOT EXISTS {{ (target)<-[:TAGGED]-() }}
+        AND NOT EXISTS {{ (target)--() }}
         DELETE target
     }}
     RETURN user_id, post_id, author_id, resource_id, label, app"

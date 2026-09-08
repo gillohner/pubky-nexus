@@ -26,6 +26,8 @@ Nexus provides a REST API, accessible via Swagger UI:
 
 You can explore available endpoints, test queries, and view schema definitions directly within Swagger.
 
+This fork also includes a [custom post kinds and universal references PoC](docs/custom-post-kinds.md), with its input contract, endpoint changes, and rollout notes.
+
 ## 🏗️ Architecture Overview
 
 Nexus is composed of several core components:

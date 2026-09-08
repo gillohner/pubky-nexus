@@ -1,12 +1,12 @@
 use crate::models::{
-    BoundedLimit, BoundedPagination, BoundedSkip, PostSearchQuery, PubkyAppPostKind, PubkyId,
-    TagLabel,
+    BoundedLimit, BoundedPagination, BoundedSkip, PostSearchQuery, PubkyId, TagLabel,
 };
 use crate::routes::v0::endpoints::{SEARCH_POSTS_BY_CONTENT_ROUTE, SEARCH_POSTS_BY_TAG_ROUTE};
 use crate::routes::{Path, Query};
 use crate::Result;
 use axum::Json;
 use nexus_common::models::post::search::{PostsByContentSearch, PostsByTagSearch};
+use nexus_common::models::post::PostKind;
 use nexus_common::types::StreamSorting;
 use serde::Deserialize;
 use tracing::debug;
@@ -65,7 +65,7 @@ pub async fn search_posts_by_tag_handler(
 pub struct SearchPostsByContentQuery {
     pub q: PostSearchQuery,
     pub author: Option<PubkyId>,
-    pub kind: Option<PubkyAppPostKind>,
+    pub kind: Option<PostKind>,
     #[serde(flatten)]
     pub pagination: BoundedPagination<1000, 20, 100>,
 }
@@ -78,7 +78,7 @@ pub struct SearchPostsByContentQuery {
     params(
         ("q" = PostSearchQuery, Query, description = "Search query (2–30 characters, up to 4 terms)"),
         ("author" = Option<PubkyId>, Query, description = "Optional author Pubky ID to scope results"),
-        ("kind" = Option<PubkyAppPostKind>, Query, description = "Optional post kind to filter by: short, long, image, video, link, file, collection"),
+        ("kind" = Option<PostKind>, Query, description = "Optional exact, case-sensitive post kind, including custom kinds"),
         ("skip" = Option<BoundedSkip<1000>>, Query, description = "Skip N results (max 1000)"),
         ("limit" = Option<BoundedLimit<20, 100>>, Query, description = "Limit the number of results (1–100, default 20)")
     ),
@@ -116,12 +116,7 @@ pub async fn search_posts_by_content_handler(
 #[derive(OpenApi)]
 #[openapi(
     paths(search_posts_by_tag_handler, search_posts_by_content_handler),
-    components(schemas(
-        PostsByTagSearch,
-        PostsByContentSearch,
-        PostSearchQuery,
-        PubkyAppPostKind
-    ))
+    components(schemas(PostsByTagSearch, PostsByContentSearch, PostSearchQuery, PostKind))
 )]
 pub struct SearchPostsApiDocs;
 
@@ -156,13 +151,13 @@ mod tests {
     #[test]
     fn kind_valid_short_accepted() {
         let q = parse_query("q=bitcoin&kind=short").expect("valid kind must parse");
-        assert_eq!(q.kind, Some(PubkyAppPostKind::Short));
+        assert_eq!(q.kind, Some(PostKind::Short));
     }
 
     #[test]
-    fn kind_unknown_parses_as_unknown() {
+    fn custom_kind_is_preserved() {
         let q =
             parse_query("q=bitcoin&kind=not-a-kind").expect("lenient kind parsing must not error");
-        assert_eq!(q.kind, Some(PubkyAppPostKind::Unknown));
+        assert_eq!(q.kind.unwrap().as_str(), "not-a-kind");
     }
 }

@@ -85,8 +85,7 @@ pub(crate) async fn drop_post_content_index() -> RedisResult<()> {
 /// * The **author** half is assembled raw as `@author:{<id>}` and must NOT pass
 ///   through `sanitize_query` (which would turn `@` and `{` into spaces) or
 ///   `fuzzy_token` (which would %-escape the author id).
-/// * The **kind** half is assembled raw as `@kind:{<kind>}` — the kind value is
-///   the serde-serialized enum variant (e.g. "short", "long").
+/// * The **kind** half escapes TAG query syntax so custom kind strings stay literal.
 ///
 /// Returns `None` when the content half is empty — author/kind filters alone
 /// must not degenerate into listing endpoints.
@@ -107,7 +106,14 @@ fn build_ft_query(content: &str, author: Option<&str>, kind: Option<&str>) -> Op
         parts.push(format!("@author:{{{a}}}"));
     }
     if let Some(k) = kind {
-        parts.push(format!("@kind:{{{k}}}"));
+        let mut escaped = String::with_capacity(k.len());
+        for c in k.chars() {
+            if c.is_ascii_punctuation() || c.is_whitespace() {
+                escaped.push('\\');
+            }
+            escaped.push(c);
+        }
+        parts.push(format!("@kind:{{{escaped}}}"));
     }
     parts.push(fuzzy);
 

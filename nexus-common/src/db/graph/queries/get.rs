@@ -39,6 +39,13 @@ pub fn get_post_by_id(author_id: &str, post_id: &str) -> Query {
                 // Avoids enum deserialization ERROR
                 kind: COALESCE(p.kind, 'short'),
                 attachments: p.attachments,
+                parent: COALESCE(
+                    p.parent,
+                    CASE WHEN parent_post IS NULL THEN null
+                         ELSE 'pubky://' + author.id + '/pub/pubky.app/posts/' + parent_post.id
+                    END
+                ),
+                embed: p.embed,
                 lock: p.lock
             } as details,
             COLLECT([author.id, parent_post.id]) AS reply
@@ -67,7 +74,7 @@ pub fn post_counts(author_id: &str, post_id: &str) -> Query {
                 replies: COUNT { (p)<-[:REPLIED]-() },
                 reposts: COUNT { (p)<-[:REPOSTED]-() }
             } AS counts,
-            EXISTS { (p)-[:REPLIED]->(:Post) } AS is_reply
+            EXISTS { (p)-[:REPLIED]->() } AS is_reply
     ",
     )
     .param("author_id", author_id)
@@ -446,8 +453,7 @@ pub fn resource_stream(
     labels: Option<&[String]>,
     sorting: &ResourceSorting,
     order: &SortOrder,
-    skip: usize,
-    limit: usize,
+    pagination: &Pagination,
 ) -> Query {
     // Map enums to safe Cypher literals — prevents injection
     let sorting_field = match sorting {
@@ -459,7 +465,13 @@ pub fn resource_stream(
         SortOrder::Descending => "DESC",
     };
 
-    let mut cypher = String::from("MATCH (tagger:User)-[t:TAGGED]->(r:Resource)\n");
+    let mut cypher = String::from("MATCH (r:Resource)\n");
+    if app.is_some() {
+        cypher.push_str(
+            "WHERE EXISTS { ()-[ref:TAGGED|EMBEDS|REPLIED]->(r) WHERE ref.app = $app }\n",
+        );
+    }
+    cypher.push_str("OPTIONAL MATCH (tagger:User)-[t:TAGGED]->(r)\n");
 
     let mut where_clauses = Vec::new();
     if app.is_some() {
@@ -474,16 +486,34 @@ pub fn resource_stream(
         cypher.push('\n');
     }
 
+    cypher.push_str("WITH r, COUNT(DISTINCT tagger) AS taggers_count\n");
+    if labels.is_some() {
+        cypher.push_str("WHERE taggers_count > 0\n");
+    }
     cypher.push_str(&format!(
-        "WITH DISTINCT r, COUNT(DISTINCT tagger) AS taggers_count
-         ORDER BY {sorting_field} {order_direction}
+        "WITH r, taggers_count, {sorting_field} AS score\n"
+    ));
+    cypher.push_str(
+        "WHERE ($start IS NULL OR score <= $start) AND ($end IS NULL OR score >= $end)\n",
+    );
+    cypher.push_str(&format!(
+        "WITH r, taggers_count, score
+         ORDER BY score {order_direction}, r.id {order_direction}
          SKIP $skip LIMIT $limit
-         RETURN r.id AS resource_id, r.indexed_at AS indexed_at, taggers_count"
+         RETURN r.id AS resource_id, score"
     ));
 
     let mut query = Query::new("resource_stream", &cypher)
-        .param("skip", skip as i64)
-        .param("limit", limit as i64);
+        .param(
+            "skip",
+            pagination.skip.unwrap_or(0).min(MAX_QUERY_SKIP) as i64,
+        )
+        .param(
+            "limit",
+            pagination.limit.unwrap_or(10).min(MAX_QUERY_LIMIT) as i64,
+        )
+        .param("start", pagination.start)
+        .param("end", pagination.end);
 
     if let Some(a) = app {
         query = query.param("app", a);
@@ -667,7 +697,7 @@ const USER_COUNT_FIELDS: &[(&str, &str)] = &[
     ("posts", "COUNT { (u)-[:AUTHORED]->(:Post) }"),
     (
         "replies",
-        "COUNT { (u)-[:AUTHORED]->(:Post)-[:REPLIED]->(:Post) }",
+        "COUNT { (u)-[:AUTHORED]->(:Post)-[:REPLIED]->() }",
     ),
     (
         "collections",
@@ -1141,7 +1171,7 @@ pub fn post_stream(
     if !matches!(source, StreamSource::Bookmarks { .. }) {
         append_condition(
             &mut cypher,
-            "NOT ( (p)-[:REPLIED]->(:Post) )",
+            "NOT ( (p)-[:REPLIED]->() )",
             &mut where_clause_applied,
         );
     }
@@ -1375,6 +1405,9 @@ pub fn post_is_safe_to_delete(author_id: &str, post_id: &str) -> Query {
                 OR
                 // 3. Outgoing REPLIED relationship to another post
                 (type(r) = 'REPLIED' AND startNode(r) = p)
+                OR
+                // 4. Outgoing EMBEDS relationship to a shared resource
+                (type(r) = 'EMBEDS' AND startNode(r) = p)
             )
         } AS flag
 ",

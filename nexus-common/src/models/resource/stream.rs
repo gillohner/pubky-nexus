@@ -39,8 +39,8 @@ pub enum ResourceSorting {
 pub struct ResourceKeyStream {
     pub resource_ids: Vec<String>,
     /// Score of the last entry, usable as a cursor for the next page.
-    /// Set to `Some(score)` when served from Redis sorted sets (score-based pagination).
-    /// Set to `None` when served from Neo4j graph fallback (use skip/limit pagination instead).
+    /// Both Redis and graph queries use inclusive score bounds. Use skip/limit
+    /// to page within equal scores without dropping tied entries.
     pub last_score: Option<u64>,
 }
 
@@ -222,7 +222,9 @@ impl ResourceStream {
             ResourceStreamSource::All => None,
         };
 
-        if can_use_index(app, tags) {
+        // Tag indexes have no entries for embed-only resources. Unfiltered
+        // resource streams use graph truth until an embed-aware cache exists.
+        if tags.is_some_and(|tags| !tags.is_empty()) && can_use_index(app, tags) {
             let key_parts = build_index_key(sorting, app, tags);
 
             let entries = Self::try_from_index_sorted_set(
@@ -257,28 +259,21 @@ impl ResourceStream {
         pagination: &Pagination,
         order: SortOrder,
     ) -> ModelResult<ResourceKeyStream> {
-        let query = queries::get::resource_stream(
-            app,
-            tags,
-            sorting,
-            &order,
-            pagination.skip.unwrap_or(0),
-            pagination.limit.unwrap_or(10),
-        );
+        let query = queries::get::resource_stream(app, tags, sorting, &order, pagination);
 
         let graph = crate::db::get_neo4j_graph()?;
         let mut result = graph.execute(query).await.map_err(GraphError::from)?;
 
         let mut resource_ids = Vec::new();
+        let mut last_score = None;
 
         while let Some(row) = result.try_next().await.map_err(GraphError::from)? {
-            let id: String = row.get("resource_id").unwrap_or_default();
+            let id: String = row.get("resource_id")?;
+            last_score = Some(row.get::<i64>("score")? as u64);
             resource_ids.push(id);
         }
 
-        // Graph path uses SKIP/LIMIT pagination, not score cursors.
-        // Set last_score = None to signal callers should use offset-based pagination.
-        Ok(ResourceKeyStream::new(resource_ids, None))
+        Ok(ResourceKeyStream::new(resource_ids, last_score))
     }
 
     // -----------------------------------------------------------------------
