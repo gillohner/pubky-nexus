@@ -15,6 +15,7 @@ mock = []
 
 [dependencies]
 axum = "0.8.9"
+blake3 = { workspace = true }
 axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }

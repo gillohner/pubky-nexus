@@ -15,6 +15,9 @@ use tracing::{debug, Instrument};
 
 use super::utils::{fail_on_blacklisted_hs, post_kind, post_relationships_is_reply};
 
+mod mentions;
+use mentions::{mentioned_ids, synchronize_mentions, MentionPost};
+
 #[tracing::instrument(name = "post.put", skip_all, fields(user_id = %author_id, post_id = %post_id))]
 pub async fn sync_put(
     post: impl Into<PostInput>,
@@ -72,15 +75,28 @@ pub async fn sync_put(
         }
     };
 
+    // Resolve only the first recipient, matching the native ingestion bound.
+    // Do this before edge creation so a newly ingested profile can be linked.
+    if let Some(mentioned) = mentioned_ids(&post.kind, &post.content)
+        .into_iter()
+        .find(|id| id != &author_id)
+    {
+        if let Err(e) = ingestor.maybe_ingest_user(&mentioned).await {
+            tracing::warn!("Failed to ingest mentioned user {mentioned}: {e}");
+        }
+    }
+    put_mentioned_relationships(
+        &author_id,
+        &post_id,
+        &post.content,
+        &mut post_relationships,
+        post.kind.clone(),
+    )
+    .await?;
+
     if existed {
         if let Some(previous) = &previous_relationships {
             refresh_repost_targets(previous, &post_relationships).await?;
-        }
-        if post.kind.known().is_some() {
-            post_relationships.mentioned = previous_relationships
-                .as_ref()
-                .map(|r| r.mentioned.clone())
-                .unwrap_or_default();
         }
         post_relationships
             .put_to_index(&author_id, &post_id)
@@ -98,7 +114,7 @@ pub async fn sync_put(
                 // `is_different_than` ignores kind, so refresh on a kind-only edit too.
                 let kind_changed = existing_details.kind != post_details.kind;
                 if existing_details.is_different_than(&post_details) || kind_changed {
-                    // A lock- or kind-only toggle refreshes the cache but must not notify.
+                    // A lock- or kind-only toggle does not notify interactors.
                     let notify =
                         existing_details.content_differs_from(&post_details) || collection_toggled;
                     sync_edit(
@@ -121,34 +137,13 @@ pub async fn sync_put(
             None => {
                 // Partial-failure recovery: graph already had the post but Redis is
                 // missing PostDetails. A previous sync_put attempt wrote the graph node
-                // but failed before completing the index writes. Re-run idempotent
-                // index writes only — counters/scores/notifications are intentionally
-                // skipped (prefer drift over duplicates).
+                // but failed before completing the index writes. Recover index
+                // state and counters from graph truth. Mention insertion is
+                // idempotent; other notifications are not replayed.
                 recover_post_index_state(&author_id, &post_id).await?;
             }
         }
         return Ok(());
-    }
-
-    // IMPORTANT: Handle the mentions before traverse the graph (reindex_post) for that post
-    // Handle "MENTIONED" relationships
-    put_mentioned_relationships(
-        &author_id,
-        &post_id,
-        &post_details.content,
-        &mut post_relationships,
-        post.kind.clone(),
-    )
-    .await?;
-
-    // We only consider the first mentioned (tagged) user, to mitigate DoS attacks against Nexus
-    // whereby posts with many (inexistent) tagged PKs can cause Nexus to spend a lot of time trying to resolve them
-    if let Some(mentioned_user_id) = &post_relationships.mentioned.first() {
-        // Best-effort: failures (incl. a blacklisted HS) must not fail the post itself,
-        // which is indexed regardless; the MENTIONED edge is simply not materialized.
-        if let Err(e) = ingestor.maybe_ingest_user(mentioned_user_id).await {
-            tracing::warn!("Failed to ingest user {mentioned_user_id}: {e}");
-        }
     }
 
     ingest_collection_item_authors(&post, ingestor).await;
@@ -342,7 +337,8 @@ async fn refresh_repost_targets(
 /// concurrent tag/bookmark/reply handler that also went through graph is
 /// already reflected.
 ///
-/// Notifications are intentionally NOT re-run (0 > N duplicates on retry).
+/// Mention notifications are retried with atomic insertion; other notifications
+/// are not repeated during recovery.
 async fn recover_post_index_state(
     author_id: &PubkyId,
     post_id: &str,
@@ -375,11 +371,19 @@ async fn recover_post_index_state(
         }
     }
 
-    // Re-merge any MENTIONED graph edges that the original mention loop
-    // didn't finish. Skips notifications (0 > N on retry).
-    if post_details.kind.known().is_some() {
-        merge_mention_edges(author_id, post_id, &post_details.content).await?;
-    }
+    // Complete any interrupted mention rebuild. Atomic notification insertion
+    // preserves the timestamp of an already delivered semantic notification.
+    let mut relationships = PostRelationships::default();
+    synchronize_mentions(
+        MentionPost {
+            author_id,
+            post_id,
+            kind: &post_details.kind,
+        },
+        &post_details.content,
+        &mut relationships,
+    )
+    .await?;
 
     // Reindex all Redis state from graph truth.
     let (details_result, relationships_result, counts_result) = nexus_common::traced_join!(
@@ -468,87 +472,16 @@ pub async fn put_mentioned_relationships(
     relationships: &mut PostRelationships,
     post_kind: PostKind,
 ) -> Result<(), EventProcessorError> {
-    if post_kind.known().is_none() {
-        return Ok(());
-    }
-    // TODO Deprecate, drop support for pk: support in an upcoming release
-    // Backwards compatibility: identify user references with "pk:" prefix
-    put_mentioned_relationships_for_prefix(
-        author_id,
-        post_id,
+    synchronize_mentions(
+        MentionPost {
+            author_id,
+            post_id,
+            kind: &post_kind,
+        },
         content,
         relationships,
-        "pk:",
-        post_kind.clone(),
     )
-    .await?;
-
-    // Support new pubkey display: identify user references with "pubky" prefix
-    put_mentioned_relationships_for_prefix(
-        author_id,
-        post_id,
-        content,
-        relationships,
-        "pubky",
-        post_kind,
-    )
-    .await?;
-
-    Ok(())
-}
-
-async fn put_mentioned_relationships_for_prefix(
-    author_id: &PubkyId,
-    post_id: &str,
-    content: &str,
-    relationships: &mut PostRelationships,
-    prefix: &str,
-    post_kind: PostKind,
-) -> Result<(), EventProcessorError> {
-    for pubky_id in find_mentioned_ids(content, prefix) {
-        // Create the MENTIONED relationship in the graph
-        let query = queries::put::create_mention_relationship(author_id, post_id, &pubky_id);
-        exec_single_row(query).await?;
-
-        let maybe_mentioned_id =
-            Notification::new_mention(author_id, &pubky_id, post_id, post_kind.clone()).await?;
-        if let Some(mentioned_user_id) = maybe_mentioned_id {
-            relationships.mentioned.push(mentioned_user_id);
-        }
-    }
-
-    Ok(())
-}
-
-fn find_mentioned_ids(content: &str, prefix: &str) -> Vec<PubkyId> {
-    let user_id_len = 52;
-    let mut seen = std::collections::HashSet::new();
-    content
-        .match_indices(prefix)
-        .filter_map(|(start_idx, _)| {
-            let user_id_start = start_idx + prefix.len();
-            content
-                .get(user_id_start..user_id_start + user_id_len)
-                .and_then(|candidate| PubkyId::try_from(candidate).ok())
-        })
-        .filter(|id| seen.insert(id.to_string()))
-        .collect()
-}
-
-/// Idempotent MERGE of every MENTIONED edge for the post. No notifications,
-/// no Redis — safe to re-run from recovery.
-async fn merge_mention_edges(
-    author_id: &PubkyId,
-    post_id: &str,
-    content: &str,
-) -> Result<(), EventProcessorError> {
-    for prefix in ["pk:", "pubky"] {
-        for pubky_id in find_mentioned_ids(content, prefix) {
-            let query = queries::put::create_mention_relationship(author_id, post_id, &pubky_id);
-            exec_single_row(query).await?
-        }
-    }
-    Ok(())
+    .await
 }
 
 /// Best-effort ingestion of the user of every URI in a Collection's

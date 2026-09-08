@@ -6,6 +6,7 @@ pub mod follow;
 pub mod homeserver;
 pub mod notification;
 pub mod post;
+pub mod post_projection;
 pub mod resource;
 pub mod tag;
 pub mod traits;

@@ -19,6 +19,7 @@ mod edit_reply_parent_notification;
 mod edit_reposted_notification;
 mod edit_tagged_notification;
 mod engagement;
+mod eventky_acceptance;
 mod fail_reply;
 mod fail_repost;
 mod fail_user;

@@ -6,6 +6,7 @@ mod kind;
 mod metrics;
 mod relationships;
 pub mod search;
+pub mod social;
 mod stream;
 mod view;
 

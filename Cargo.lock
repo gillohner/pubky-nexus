@@ -3103,6 +3103,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-server",
+ "blake3",
  "chrono",
  "clap",
  "const_format",

@@ -326,6 +326,34 @@ impl Notification {
         Ok(Some(mentioned_id.clone()))
     }
 
+    /// Replayed mentions must not move an existing notification body's timestamp.
+    /// Kind remains part of the native member identity, so kind transitions may
+    /// retain a distinct historical mention alongside the prior body.
+    pub async fn new_mention_once(
+        user_id: &PubkyId,
+        mentioned_id: &PubkyId,
+        post_id: &str,
+        post_kind: PostKind,
+    ) -> RedisResult<()> {
+        if user_id == mentioned_id {
+            return Ok(());
+        }
+        let body = NotificationBody::Mention {
+            mentioned_by: user_id.to_string(),
+            post_uri: post_uri_builder(user_id.to_string(), post_id.to_string()),
+            post_kind,
+        };
+        let member = serde_json::to_string(&body)
+            .map_err(|e| RedisError::SerializationFailed(Box::new(e)))?;
+        Self::add_index_sorted_set_if_absent(
+            &["Notification", mentioned_id.as_ref()],
+            Utc::now().timestamp_millis() as f64,
+            &member,
+            None,
+        )
+        .await
+    }
+
     pub async fn new_repost(
         user_id: &str,
         embed_uri: &str,
