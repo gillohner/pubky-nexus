@@ -118,5 +118,6 @@ async fn existing_endpoints_return_and_filter_custom_posts() -> Result<()> {
     for id in ids {
         exec_single_row(queries::del::delete_post(&author, &id)).await?;
     }
+    UserDetails::delete(author.as_ref()).await?;
     Ok(())
 }
