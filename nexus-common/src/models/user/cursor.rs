@@ -36,6 +36,15 @@ impl UserHsCursor {
     /// The cursor is stored as the score (f64), exact for integer values up to
     /// 2^53 — practically unreachable for monotonic event IDs.
     pub async fn read(user_ids: &[&str], hs_id: &str) -> RedisResult<Vec<u64>> {
+        Ok(Self::read_tracked(user_ids, hs_id)
+            .await?
+            .into_iter()
+            .map(|cursor| cursor.unwrap_or(0))
+            .collect())
+    }
+
+    /// Preserve absent entries so the primary fast lane only handles explicitly tracked users.
+    pub async fn read_tracked(user_ids: &[&str], hs_id: &str) -> RedisResult<Vec<Option<u64>>> {
         let keys: Vec<UserHsCursorKey> = user_ids.iter().map(|u| user_hs_cursor_key(u)).collect();
         let pairs: Vec<(&[&str], &[&str])> = keys
             .iter()
@@ -53,7 +62,7 @@ impl UserHsCursor {
                     let msg = format!("negative cursor score {score} for HS {hs_id}");
                     return Err(RedisError::InvalidInput(msg));
                 }
-                Ok(score as u64)
+                Ok(s.map(|_| score as u64))
             })
             .collect()
     }
@@ -114,6 +123,10 @@ mod tests {
         // A user with no stored cursor reads back as 0.
         let cursors = UserHsCursor::read(&[user_with_cursor.as_str()], &hs_id).await?;
         assert_eq!(cursors, vec![0]);
+        assert_eq!(
+            UserHsCursor::read_tracked(&[user_with_cursor.as_str()], hs_id.as_str()).await?,
+            vec![None]
+        );
 
         // A written cursor round-trips; a user without an entry stays at 0.
         UserHsCursor::write(&user_with_cursor, &hs_id, 42).await?;
@@ -152,6 +165,10 @@ mod tests {
         UserHsCursor::init(&user_id, &hs_id).await?;
         let cursors = UserHsCursor::read(&[user_id.as_str()], &hs_id).await?;
         assert_eq!(cursors, vec![0]);
+        assert_eq!(
+            UserHsCursor::read_tracked(&[user_id.as_str()], hs_id.as_str()).await?,
+            vec![Some(0)]
+        );
 
         // Advance the cursor, then init again (e.g. re-ingestion): it must not rewind.
         UserHsCursor::write(&user_id, &hs_id, 100).await?;

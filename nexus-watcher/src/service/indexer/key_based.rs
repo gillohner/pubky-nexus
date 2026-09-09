@@ -112,6 +112,9 @@ pub struct KeyBasedEventProcessor {
     /// Bounds execution time per user, preventing timeout and starvation.
     pub limit: u16,
 
+    /// This processor participates in exclusive primary-user routing.
+    pub primary_user_indexing: bool,
+
     pub event_handler: Arc<dyn EventHandler>,
     pub event_source: Arc<dyn KeyBasedEventSource>,
     pub user_not_found_backoff: Arc<UserNotFoundBackoff>,
@@ -129,6 +132,14 @@ pub struct KeyBasedEventProcessor {
 
 #[async_trait::async_trait]
 impl TEventProcessor for KeyBasedEventProcessor {
+    fn retries_in_stream(&self) -> bool {
+        self.primary_user_indexing
+    }
+
+    fn primary_user_indexing(&self) -> bool {
+        self.primary_user_indexing
+    }
+
     fn event_handler(&self) -> &Arc<dyn EventHandler> {
         &self.event_handler
     }
@@ -241,14 +252,20 @@ impl KeyBasedEventProcessor {
         }
 
         let user_id_strs: Vec<&str> = valid_users.iter().map(|(_, id)| *id).collect();
-        let cursors = UserHsCursor::read(&user_id_strs, hs_id).await?;
+        let cursors = UserHsCursor::read_tracked(&user_id_strs, hs_id).await?;
 
-        let users = valid_users
+        let mut users: Vec<_> = valid_users
             .into_iter()
             .zip(cursors)
-            .map(|((pk, _), cursor)| (pk, EventCursor::new(cursor)))
+            .filter_map(|((pk, _), cursor)| {
+                super::primary_users::eligible_cursor(cursor, self.primary_user_indexing)
+                    .map(|cursor| (pk, EventCursor::new(cursor)))
+            })
             .collect();
 
+        if self.primary_user_indexing {
+            users.sort_by_key(|(_, cursor)| (cursor.id() != 0, std::cmp::Reverse(cursor.id())));
+        }
         Ok(users)
     }
 

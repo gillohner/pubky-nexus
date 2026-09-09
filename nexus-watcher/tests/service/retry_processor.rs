@@ -70,6 +70,7 @@ fn build_processor(
     shutdown_rx: watch::Receiver<bool>,
 ) -> Arc<RetryProcessor> {
     Arc::new(RetryProcessor {
+        primary_user_homeserver: None,
         event_handler,
         shutdown_rx,
         config,
@@ -1200,5 +1201,47 @@ async fn test_future_events_not_picked_up() -> Result<()> {
     );
 
     let _ = shutdown_tx.send(true);
+    Ok(())
+}
+
+#[tokio_shared_rt::test(shared)]
+async fn old_primary_retry_is_delegated_before_it_can_delete_newer_user_state() -> Result<()> {
+    use nexus_common::models::user::UserHsCursor;
+    use nexus_common::utils::test_utils::random_pubky_id;
+    setup().await?;
+    let user_id = random_pubky_id().to_string();
+    let hs_id = random_pubky_id().to_string();
+    UserHsCursor::init(&user_id, &hs_id).await?;
+    let event_uri = post_uri_builder(user_id.clone(), "003286NSMY490".into());
+    let store = new_in_memory_store();
+    let event = RetryEvent {
+        retry_count: 0,
+        event_type: EventType::Del,
+        event_uri: event_uri.clone(),
+        next_retry_at: 0,
+        origin_homeserver_id: hs_id.clone(),
+    };
+    store.put(&event).await?;
+    let handler = create_mock_handler(Ok(()), None);
+    let mut processor = build_processor(
+        store.clone(),
+        EventRetryConfig::default(),
+        handler.clone(),
+        watch::channel(false).1,
+    );
+    Arc::get_mut(&mut processor)
+        .unwrap()
+        .primary_user_homeserver = Some(hs_id.clone());
+    processor.run_internal().await?;
+    assert_eq!(
+        handler.get_handle_count(),
+        0,
+        "historical retry must not overtake the primary per-user stream"
+    );
+    assert!(store.get(&IndexKey::for_uri(&event_uri)).await?.is_none());
+    assert_eq!(
+        UserHsCursor::read_tracked(&[&user_id], &hs_id).await?,
+        vec![Some(0)]
+    );
     Ok(())
 }

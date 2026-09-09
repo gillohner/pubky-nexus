@@ -83,6 +83,7 @@ fn build_processor(
     let hs_id = PubkyId::try_from(TEST_HS_ID).expect("Valid test Pubky ID");
 
     Arc::new(HsEventProcessor {
+        primary_user_indexing: false,
         homeserver: Homeserver::new(hs_id),
         limit: 100,
         event_handler,
@@ -117,6 +118,7 @@ async fn build_processor_at_cursor(
     ));
 
     Ok(Arc::new(HsEventProcessor {
+        primary_user_indexing: false,
         homeserver,
         limit: 100,
         event_handler,
@@ -764,5 +766,45 @@ async fn test_cursor_not_persisted_when_batch_stops() -> Result<()> {
     );
 
     let _ = shutdown_tx.send(true);
+    Ok(())
+}
+
+#[tokio_shared_rt::test(shared)]
+async fn tracked_primary_user_is_delegated_without_resetting_global_or_user_history() -> Result<()>
+{
+    use nexus_common::models::user::UserHsCursor;
+    setup().await?;
+    let user_id = random_user_id();
+    let handler = create_mock_handler(Ok(()), None);
+    let mut processor = build_processor_at_cursor(
+        40,
+        new_in_memory_store(),
+        handler.clone(),
+        watch::channel(false).1,
+    )
+    .await?;
+    Arc::get_mut(&mut processor).unwrap().primary_user_indexing = true;
+    let hs_id = processor.homeserver.id.to_string();
+    create_user_hosted_on(&user_id, Some(&hs_id)).await;
+    UserHsCursor::init(&user_id, &hs_id).await?;
+    let uri = post_uri_builder(user_id.clone(), "delegated".to_string());
+    processor
+        .process_event_lines(vec![format!("DEL {uri}"), "cursor: 41".into()])
+        .await?;
+    assert_eq!(
+        handler.get_handle_count(),
+        0,
+        "the per-user stream exclusively owns tracked history"
+    );
+    assert_eq!(
+        stored_cursor(&hs_id).await?,
+        41,
+        "global history continues normally"
+    );
+    assert_eq!(
+        UserHsCursor::read_tracked(&[&user_id], &hs_id).await?,
+        vec![Some(0)],
+        "delegation must not skip per-user history"
+    );
     Ok(())
 }

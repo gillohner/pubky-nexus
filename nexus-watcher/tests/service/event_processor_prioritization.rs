@@ -40,7 +40,8 @@ async fn test_event_processor_runner_primary_homeserver_excluded() -> Result<(),
             transient_ms: 10_000,
         },
     ));
-    let runner = KeyBasedEventProcessorRunner {
+    let mut runner = KeyBasedEventProcessorRunner {
+        primary_user_indexing: false,
         limit: 1000,
         monitored_hs_limit: HS_IDS.len(),
         event_handler,
@@ -65,6 +66,9 @@ async fn test_event_processor_runner_primary_homeserver_excluded() -> Result<(),
         !hs_ids.contains(&HS_IDS[3].to_string()),
         "Primary homeserver should be excluded from pre_run"
     );
+    runner.primary_user_indexing = true;
+    runner.monitored_hs_limit = 0;
+    assert_eq!(runner.pre_run().await?, vec![HS_IDS[3].to_string()]);
 
     Ok(())
 }
@@ -92,7 +96,8 @@ async fn test_event_processor_runner_blacklisted_homeserver_excluded() -> Result
     // Fresh random HSs so this test's active-user graph state is isolated.
     let blacklisted_hs = random_pubky_id();
     let allowed_hs = random_pubky_id();
-    let runner = KeyBasedEventProcessorRunner {
+    let mut runner = KeyBasedEventProcessorRunner {
+        primary_user_indexing: false,
         limit: 1000,
         monitored_hs_limit: 100,
         event_handler,
@@ -124,6 +129,10 @@ async fn test_event_processor_runner_blacklisted_homeserver_excluded() -> Result
         hs_ids.contains(&allowed_hs.to_string()),
         "Non-blacklisted active HS should be included in pre_run"
     );
+    runner.primary_user_indexing = true;
+    runner.monitored_hs_limit = 0;
+    runner.hs_blacklist = HsBlacklist::new([runner.primary_homeserver.clone()]);
+    assert!(runner.pre_run().await?.is_empty());
 
     Ok(())
 }

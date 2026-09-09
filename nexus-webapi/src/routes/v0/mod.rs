@@ -25,7 +25,6 @@ use super::AppState;
 /// Expensive routes receive tighter rate limiting.
 pub fn routes(app_state: AppState) -> (Router<AppState>, Router<AppState>) {
     let expensive = Router::new()
-        .merge(post_projection::routes())
         .merge(stream::expensive_routes())
         .merge(tag::expensive_routes())
         .merge(search::expensive_routes())

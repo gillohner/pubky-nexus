@@ -46,6 +46,13 @@ fn default_expensive_bucket() -> RateLimitBucketConfig {
     RateLimitBucketConfig { rate: 20, burst: 5 }
 }
 
+fn default_projection_bucket() -> RateLimitBucketConfig {
+    RateLimitBucketConfig {
+        rate: 120,
+        burst: 10,
+    }
+}
+
 /// Rate limiting configuration for the API
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct RateLimitConfig {
@@ -58,6 +65,9 @@ pub struct RateLimitConfig {
     /// Expensive bucket config for high-cost endpoints
     #[serde(default = "default_expensive_bucket")]
     pub expensive_bucket: RateLimitBucketConfig,
+    /// Independent quota for authenticated private projection replication.
+    #[serde(default = "default_projection_bucket")]
+    pub projection_bucket: RateLimitBucketConfig,
     /// When true, forwarded-IP headers (X-Forwarded-For / X-Real-IP) are trusted for
     /// real-IP extraction. Only enable behind a known reverse proxy; never in direct-to-internet
     /// deployments (clients can spoof these headers).
@@ -71,6 +81,7 @@ impl Default for RateLimitConfig {
             enabled: false,
             default_bucket: default_default_bucket(),
             expensive_bucket: default_expensive_bucket(),
+            projection_bucket: default_projection_bucket(),
             trust_proxy_headers: false,
         }
     }

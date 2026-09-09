@@ -1,5 +1,6 @@
 mod homeserver;
 mod key_based;
+pub(crate) mod primary_users;
 
 pub use homeserver::HsEventProcessor;
 pub use key_based::{KeyBasedEventProcessor, KeyBasedEventSource, PubkyKeyBasedEventSource};
@@ -73,6 +74,16 @@ pub trait TEventProcessor: Send + Sync + 'static {
         None
     }
 
+    /// Keep failures at an ordered stream cursor rather than retrying them out of order.
+    fn retries_in_stream(&self) -> bool {
+        false
+    }
+
+    /// Coordinate primary global/per-user handlers only when exclusive routing is enabled.
+    fn primary_user_indexing(&self) -> bool {
+        false
+    }
+
     fn homeserver_id(&self) -> Option<&str> {
         None
     }
@@ -90,22 +101,28 @@ pub trait TEventProcessor: Send + Sync + 'static {
             service = %instance_name,
             homeserver,
         );
-        let handle = tokio::spawn(self.run_internal().instrument(span));
-
-        let join_result = tokio::time::timeout(timeout, handle)
-            .await
-            .inspect_err(
-                |_| error!(service = %instance_name, homeserver, "Event processor timed out"),
-            )
-            .map_err(|_| RunError::TimedOut)?;
+        let abort_on_timeout = self.primary_user_indexing();
+        let mut handle = tokio::spawn(self.run_internal().instrument(span));
+        let join_result = match tokio::time::timeout(timeout, &mut handle).await {
+            Ok(result) => result,
+            Err(_) => {
+                error!(service = %instance_name, homeserver, "Event processor timed out");
+                if abort_on_timeout {
+                    // An old primary batch must not survive and interleave with the next ordered poll.
+                    handle.abort();
+                    let _ = handle.await;
+                }
+                return Err(RunError::TimedOut);
+            }
+        };
 
         // The JoinError can be:
         // - join_error.is_panic() => panic by the inner future
         // - join_error.is_cancelled() => inner future was abruptly interrupted, for example
         //   - JoinHandle::abort() is called on the handle
         //   - the Tokio runtime is shut down
-        // In our model, we don't trigger such interruptions. Instead we use the shutdown signal
-        // to gracefully stop the event processing loop. Therefore we consider all JoinErrors as panics.
+        // Primary timeout cancellation is joined and returned above. Normal shutdown uses
+        // the shutdown signal, so any remaining JoinError is unexpected.
         let run_internal_result = join_result
             .inspect_err(|je| {
                 error!(
@@ -174,7 +191,9 @@ pub trait TEventProcessor: Send + Sync + 'static {
         event: &Event,
         error: EventProcessorError,
     ) -> Result<(), EventProcessorError> {
-        if error.should_not_retry_now() {
+        if error.should_not_retry_now()
+            || (self.retries_in_stream() && RetryScheduler::should_enqueue_related_event(&error))
+        {
             warn!(error = %error, "Got should-not-retry-now error, stopping batch");
             return Err(error);
         }
@@ -233,6 +252,7 @@ pub trait TEventProcessor: Send + Sync + 'static {
         )
     )]
     async fn handle_event(&self, event: &Event) -> Result<(), EventProcessorError> {
+        let _primary_guard = primary_users::processing_guard(self.primary_user_indexing()).await;
         let span = tracing::Span::current();
 
         match self.should_process_event(event).await {

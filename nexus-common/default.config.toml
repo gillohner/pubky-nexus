@@ -25,6 +25,10 @@ burst = 50
 [api.rate_limit.expensive_bucket]
 rate = 20
 burst = 5
+# Private authenticated replication has a separate budget from public searches/bootstrap.
+[api.rate_limit.projection_bucket]
+rate = 120
+burst = 10
 
 [watcher]
 # Synonym homeserver pubky
@@ -35,6 +39,8 @@ events_limit = 50
 key_based_events_limit = 50
 # Maximum number of monitored external homeservers.
 monitored_homeservers_limit = 50
+# Opt-in fast indexing for explicitly ingested primary users; global history continues.
+primary_user_indexing = false
 primary_hs_monitoring_interval_ms = 5000
 external_hs_monitoring_interval_ms = 5000
 hs_resolver_interval_ms = 10000

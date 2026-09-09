@@ -105,6 +105,7 @@ impl WatcherTest {
         ));
 
         HsEventProcessorRunner {
+            primary_user_indexing: false,
             limit: 1000,
             event_handler,
             shutdown_rx,

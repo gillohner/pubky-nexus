@@ -105,6 +105,7 @@ pub fn app_routes(
     rate_limit: &RateLimitConfig,
     shutdown_rx: Receiver<bool>,
 ) -> Router<AppState> {
+    let projection = v0::post_projection::routes(rate_limit, shutdown_rx.clone());
     // Split routes into expensive and default buckets
     let (v0_expensive, v0_default) = v0::routes(state.clone());
     let (static_expensive, static_default) = r#static::routes();
@@ -134,7 +135,7 @@ pub fn app_routes(
     );
 
     // Merge both buckets (each carries its own rate limit layer).
-    expensive.merge(default)
+    expensive.merge(default).merge(projection)
 }
 
 /// Builds the full application [Router]: attaches `routes` to `state`, then layers on

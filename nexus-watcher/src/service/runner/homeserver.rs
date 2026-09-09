@@ -15,6 +15,9 @@ pub struct HsEventProcessorRunner {
     /// See [WatcherConfig::events_limit]
     pub limit: u16,
 
+    /// Opt-in exclusive routing of explicitly tracked primary users.
+    pub primary_user_indexing: bool,
+
     pub event_handler: Arc<dyn EventHandler>,
     pub shutdown_rx: Receiver<bool>,
 
@@ -30,6 +33,7 @@ impl HsEventProcessorRunner {
     pub fn from_config(config: &WatcherConfig, shutdown_rx: Receiver<bool>) -> Self {
         Self {
             limit: config.events_limit,
+            primary_user_indexing: config.primary_user_indexing,
             event_handler: Arc::new(DefaultEventHandler::from_config(config)),
             shutdown_rx,
             primary_homeserver: config.homeserver.clone(),
@@ -58,6 +62,7 @@ impl TEventProcessorRunner for HsEventProcessorRunner {
         Ok(Arc::new(HsEventProcessor {
             homeserver,
             limit: self.limit,
+            primary_user_indexing: self.primary_user_indexing,
             event_handler: self.event_handler.clone(),
             shutdown_rx: self.shutdown_rx.clone(),
             retry_scheduler: self.retry_scheduler.clone(),

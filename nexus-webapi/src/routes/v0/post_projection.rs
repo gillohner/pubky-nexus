@@ -114,14 +114,28 @@ fn map_error(error: ProjectionError) -> Error {
     }
 }
 
-pub fn routes() -> Router<AppState> {
+pub fn routes(
+    config: &nexus_common::RateLimitConfig,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> Router<AppState> {
     let token = std::env::var("NEXUS_PROJECTION_TOKEN")
         .ok()
         .map(Arc::<str>::from);
-    Router::new()
+    let router = Router::new()
         .route(POST_PROJECTION_HEAD_ROUTE, get(get_head))
         .route(POST_PROJECTION_INVENTORY_ROUTE, get(get_inventory))
-        .route(POST_PROJECTION_CHANGES_ROUTE, get(get_changes))
+        .route(POST_PROJECTION_CHANGES_ROUTE, get(get_changes));
+    protect_routes(router, token, config, shutdown_rx)
+}
+
+fn protect_routes<S: Clone + Send + Sync + 'static>(
+    router: Router<S>,
+    token: Option<Arc<str>>,
+    config: &nexus_common::RateLimitConfig,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> Router<S> {
+    crate::routes::middlewares::rate_limit::apply_rate_limit_projection(router, config, shutdown_rx)
+        // Last layer is outermost: reject unauthorized requests before charging the private quota.
         .layer(middleware::from_fn_with_state(token, authorize))
 }
 
@@ -193,6 +207,88 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), status);
         }
+    }
+
+    #[tokio::test]
+    async fn authenticated_projection_burst_isolated_from_public_and_unauthorized_requests() {
+        use axum::extract::ConnectInfo;
+        use nexus_common::{RateLimitBucketConfig, RateLimitConfig};
+        let config = RateLimitConfig {
+            enabled: true,
+            expensive_bucket: RateLimitBucketConfig { rate: 1, burst: 1 },
+            projection_bucket: RateLimitBucketConfig { rate: 1, burst: 3 },
+            ..Default::default()
+        };
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let token = "private-projection-test-token-with-32-characters";
+        let private = Router::new()
+            .route(POST_PROJECTION_HEAD_ROUTE, get(|| async { "head" }))
+            .route(
+                POST_PROJECTION_INVENTORY_ROUTE,
+                get(|| async { "inventory" }),
+            )
+            .route(POST_PROJECTION_CHANGES_ROUTE, get(|| async { "changes" }));
+        let public = crate::routes::middlewares::rate_limit::apply_rate_limit_expensive(
+            Router::new().route("/public", get(|| async { "public" })),
+            &config,
+            receiver.clone(),
+        );
+        let app = protect_routes(private, Some(Arc::from(token)), &config, receiver).merge(public);
+        let request = |path: &str, authorized: bool| {
+            let peer: std::net::SocketAddr = "127.0.0.1:34567".parse().unwrap();
+            let mut builder = Request::builder().uri(path).extension(ConnectInfo(peer));
+            if authorized {
+                builder = builder.header("authorization", format!("Bearer {token}"));
+            }
+            builder.body(Body::empty()).unwrap()
+        };
+        for _ in 0..20 {
+            assert_eq!(
+                app.clone()
+                    .oneshot(request(POST_PROJECTION_HEAD_ROUTE, false))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(request("/public", false))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request("/public", false))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        for path in [
+            POST_PROJECTION_HEAD_ROUTE,
+            POST_PROJECTION_INVENTORY_ROUTE,
+            POST_PROJECTION_CHANGES_ROUTE,
+        ] {
+            assert_eq!(
+                app.clone()
+                    .oneshot(request(path, true))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+        }
+        let limited = app
+            .oneshot(request(POST_PROJECTION_HEAD_ROUTE, true))
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(limited.headers().contains_key("retry-after"));
+        drop(shutdown);
     }
 
     #[test]

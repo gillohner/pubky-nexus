@@ -124,6 +124,9 @@ pub struct HsEventProcessor {
 
     /// See [WatcherConfig::events_limit]
     pub limit: u16,
+
+    /// This processor participates in exclusive primary-user routing.
+    pub primary_user_indexing: bool,
     pub event_handler: Arc<dyn EventHandler>,
     pub shutdown_rx: Receiver<bool>,
 
@@ -141,6 +144,10 @@ pub struct HsEventProcessor {
 
 #[async_trait::async_trait]
 impl TEventProcessor for HsEventProcessor {
+    fn primary_user_indexing(&self) -> bool {
+        self.primary_user_indexing
+    }
+
     fn event_handler(&self) -> &Arc<dyn EventHandler> {
         &self.event_handler
     }
@@ -166,6 +173,13 @@ impl TEventProcessor for HsEventProcessor {
     /// - An edge to a different homeserver: log a warning and skip.
     async fn should_process_event(&self, event: &Event) -> Result<bool, EventProcessorError> {
         let user_id = event.parsed_uri.user_id();
+        if self.primary_user_indexing
+            && super::primary_users::is_tracked(user_id.as_ref(), self.homeserver.id.as_ref())
+                .await?
+        {
+            // The per-user stream starts from its own cursor and owns this user's complete history.
+            return Ok(false);
+        }
 
         match self.user_hs_mapping(user_id).await? {
             // No mapping yet (graceful fallback) or actively bound here: process.

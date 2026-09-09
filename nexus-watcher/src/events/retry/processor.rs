@@ -24,6 +24,8 @@ pub struct RetryProcessor {
     pub event_handler: Arc<dyn EventHandler>,
     pub shutdown_rx: Receiver<bool>,
     pub config: EventRetryConfig,
+    /// Global retries for tracked users are delegated to this primary HS's ordered per-user stream.
+    pub primary_user_homeserver: Option<String>,
     /// Persistence backend for retry events. Production wiring uses
     /// [`RedisRetryStore`]; tests swap in an in-memory store for isolation.
     pub store: Arc<dyn RetryStore>,
@@ -31,6 +33,10 @@ pub struct RetryProcessor {
 
 #[async_trait::async_trait]
 impl TEventProcessor for RetryProcessor {
+    fn primary_user_indexing(&self) -> bool {
+        self.primary_user_homeserver.is_some()
+    }
+
     fn event_handler(&self) -> &Arc<dyn EventHandler> {
         &self.event_handler
     }
@@ -75,6 +81,9 @@ impl RetryProcessor {
             event_handler: Arc::new(DefaultEventHandler::from_config(config)),
             shutdown_rx,
             config: config.retry.clone(),
+            primary_user_homeserver: config
+                .primary_user_indexing
+                .then(|| config.homeserver.to_string()),
             store,
         }
     }
@@ -113,6 +122,23 @@ impl RetryProcessor {
                 return Ok(());
             }
         };
+
+        let primary_lane = self.primary_user_homeserver.as_deref()
+            == Some(retry_event.origin_homeserver_id.as_str());
+        let _primary_guard =
+            crate::service::indexer::primary_users::processing_guard(primary_lane).await;
+        if primary_lane
+            && crate::service::indexer::primary_users::is_tracked(
+                event.parsed_uri.user_id().as_ref(),
+                &retry_event.origin_homeserver_id,
+            )
+            .await?
+        {
+            // The ordered per-user stream replays this history from its own cursor; old global retries
+            // must not apply a historical DELETE after that stream has already applied a newer PUT.
+            self.store.remove(index_key).await?;
+            return Ok(());
+        }
 
         let ev_uri = &retry_event.event_uri;
         let ev_retry_count = retry_event.retry_count;

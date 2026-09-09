@@ -82,6 +82,31 @@ mod tests {
         DEFAULT_TRUST_REPORT_LIMIT, DEFAULT_TRUST_TOLERANCE,
     };
 
+    #[test]
+    fn primary_user_indexing_is_opt_in_and_projection_quota_is_independent() {
+        let legacy = DEFAULT_CONFIG_TOML
+            .replace("primary_user_indexing = false", "")
+            .replace(
+                "[api.rate_limit.projection_bucket]\nrate = 120\nburst = 10",
+                "",
+            );
+        let config: DaemonConfig = toml::from_str(&legacy).unwrap();
+        assert!(!config.watcher.primary_user_indexing);
+        assert_eq!(config.api.rate_limit.projection_bucket.rate, 120);
+        assert_eq!(config.api.rate_limit.projection_bucket.burst, 10);
+        assert_eq!(config.api.rate_limit.expensive_bucket.rate, 20);
+        let enabled = DEFAULT_CONFIG_TOML.replace(
+            "primary_user_indexing = false",
+            "primary_user_indexing = true",
+        );
+        assert!(
+            toml::from_str::<DaemonConfig>(&enabled)
+                .unwrap()
+                .watcher
+                .primary_user_indexing
+        );
+    }
+
     #[tokio_shared_rt::test(shared)]
     async fn test_toml_parsing() {
         let c: DaemonConfig = DaemonConfig::read_or_create_config_file(
@@ -100,6 +125,7 @@ mod tests {
         );
         assert_eq!(c.watcher.events_limit, 50);
         assert_eq!(c.watcher.key_based_events_limit, 50);
+        assert!(!c.watcher.primary_user_indexing);
         assert_eq!(c.watcher.primary_hs_monitoring_interval_ms, 5_000);
         assert_eq!(c.watcher.external_hs_monitoring_interval_ms, 5_000);
         assert_eq!(c.watcher.hs_resolver_interval_ms, 10_000);
