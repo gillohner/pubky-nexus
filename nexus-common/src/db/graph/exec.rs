@@ -6,6 +6,15 @@ use serde::de::DeserializeOwned;
 
 mod retry;
 
+/// Exercise the production mutation retry boundary against a disposable test graph.
+#[cfg(test)]
+pub(crate) async fn fetch_mutation_row_for_test(
+    graph: &dyn super::GraphOps,
+    query: Query,
+) -> neo4rs::Result<Option<Row>> {
+    retry::fetch_mutation_row(graph, query).await
+}
+
 /// Represents the outcome of a mutation-like query in the graph database.
 #[derive(Debug)]
 pub enum OperationOutcome {

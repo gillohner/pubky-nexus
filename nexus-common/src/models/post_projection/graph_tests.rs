@@ -3,10 +3,12 @@
 
 use super::{queries, Checkpoint, InventoryRow, SourceChange};
 use crate::db::graph::{
+    exec::fetch_mutation_row_for_test,
     queries::{del, put},
-    Query,
+    GraphOps, Query,
 };
 use crate::models::post::{PostDetails, PostKind, PostRelationships};
+use futures::{stream::BoxStream, StreamExt};
 use neo4rs::{query, Graph, Row};
 use pubky_app_specs::ParsedUri;
 
@@ -29,12 +31,38 @@ fn post(id: &str, kind: &str, content: &str) -> PostDetails {
     }
 }
 
+// Keep the test's single-row assertion while production retry logic drains each attempt.
+struct SingleRowGraph(crate::db::graph::Graph);
+
+#[async_trait::async_trait]
+impl GraphOps for SingleRowGraph {
+    async fn execute(
+        &self,
+        source: Query,
+    ) -> neo4rs::Result<BoxStream<'static, neo4rs::Result<Row>>> {
+        let rows = self.0.execute(source).await?;
+        Ok(rows
+            .enumerate()
+            .map(|(index, row)| {
+                if row.is_ok() {
+                    assert_eq!(index, 0, "query must return exactly one row");
+                }
+                row
+            })
+            .boxed())
+    }
+
+    async fn run(&self, source: Query) -> neo4rs::Result<()> {
+        self.0.run(source).await
+    }
+}
+
 async fn row(graph: &Graph, source: Query) -> Row {
-    let mut rows = graph.execute(source.into()).await.unwrap();
-    let result = rows.next().await.unwrap().expect("query must return a row");
-    // Consume the stream so the implicit write transaction commits before the next request.
-    assert!(rows.next().await.unwrap().is_none());
-    result
+    let graph = SingleRowGraph(crate::db::graph::Graph::new(graph.clone()));
+    fetch_mutation_row_for_test(&graph, source)
+        .await
+        .unwrap()
+        .expect("query must return a row")
 }
 
 async fn checkpoint(graph: &Graph) -> Checkpoint {
