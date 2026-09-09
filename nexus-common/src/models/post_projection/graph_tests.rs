@@ -23,6 +23,7 @@ fn post(id: &str, kind: &str, content: &str) -> PostDetails {
         attachments: Some(vec![format!(
             "pubky://{AUTHOR}/pub/pubky.app/files/003286NSMY490"
         )]),
+        parent: None,
         embed: Some("https://example.org/?q=calendar".into()),
         lock: Some("pubky://lock.example/pub/lock".into()),
     }
@@ -73,7 +74,8 @@ async fn source_mutations_replay_atomically_under_concurrency() {
     assert_eq!(initial.revision, "0");
 
     let parent = post("003286NSMY490", "calendar", "calendar source");
-    let event = post("003286NSMY491", "event", "original event 'quoted'\n$kind");
+    let mut event = post("003286NSMY491", "event", "original event 'quoted'\n$kind");
+    event.parent = Some(parent.uri.clone());
     let relation = PostRelationships {
         replied: Some(ParsedUri::try_from(parent.uri.as_str()).unwrap()),
         ..Default::default()
@@ -215,4 +217,54 @@ async fn source_mutations_replay_atomically_under_concurrency() {
     assert!(remaining
         .iter()
         .all(|change| change.revision.parse::<i64>().unwrap() > 2));
+
+    // Universal resource parents must survive both replay and pre-extension inventory.
+    let mut external = post("003286NSMY499", "event", "external reply");
+    external.parent = Some("https://example.org/external-parent".into());
+    let before = checkpoint(&graph).await;
+    row(
+        &graph,
+        put::create_post(&external, &PostRelationships::default()).unwrap(),
+    )
+    .await;
+    let changes: Vec<SourceChange> = row(
+        &graph,
+        queries::changes(before.revision.parse().unwrap(), None, 100),
+    )
+    .await
+    .get("items")
+    .unwrap();
+    assert_eq!(changes[0].post.as_ref().unwrap().parent, external.parent);
+    graph
+        .run(
+            query("MATCH (p:Post {id: $id}) REMOVE p.projection_revision, p.source_parent")
+                .param("id", external.id.clone()),
+        )
+        .await
+        .unwrap();
+    let items: Vec<InventoryRow> = row(&graph, queries::inventory(None, &["event".into()], 100))
+        .await
+        .get("rows")
+        .unwrap();
+    let restored = items
+        .iter()
+        .find(|item| item.item.uri == external.uri)
+        .unwrap();
+    assert_eq!(restored.item.post.as_ref().unwrap().parent, external.parent);
+    graph
+        .run(del::delete_post(AUTHOR, &external.id).into())
+        .await
+        .unwrap();
+    let count: i64 = row(
+        &graph,
+        Query::new(
+            "test_resource_removed",
+            "MATCH (r:Resource {uri: $uri}) RETURN count(r) AS count",
+        )
+        .param("uri", external.parent.unwrap()),
+    )
+    .await
+    .get("count")
+    .unwrap();
+    assert_eq!(count, 0);
 }
