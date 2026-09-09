@@ -105,6 +105,7 @@ impl WatcherTest {
         ));
 
         HsEventProcessorRunner {
+            backoff: Default::default(),
             primary_user_indexing: false,
             limit: 1000,
             event_handler,

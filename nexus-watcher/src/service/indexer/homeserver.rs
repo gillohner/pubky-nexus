@@ -3,18 +3,53 @@ use crate::errors::EventProcessorError;
 use crate::events::retry::RetryScheduler;
 use crate::events::{read_stream_capped, Event, EventHandler, MAX_EVENTS_BODY};
 use nexus_common::db::kv::RedisError;
-use nexus_common::db::{fetch_row_from_graph, queries, GraphResult, PubkyConnector};
+use nexus_common::db::{
+    fetch_row_from_graph, queries, GraphResult, PubkyClientError, PubkyConnector,
+};
 use nexus_common::models::error::ModelError;
 use nexus_common::models::homeserver::Homeserver;
 use opentelemetry::metrics::Counter;
 use opentelemetry::{global, KeyValue};
-use pubky::Method;
+use pubky::{Method, StatusCode};
 use pubky_app_specs::PubkyId;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::watch::Receiver;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
+
+/// Reject HTTP failures before their bodies can be interpreted as event/cursor lines.
+fn validate_events_status(status: StatusCode) -> Result<(), EventProcessorError> {
+    if status.is_success() {
+        return Ok(());
+    }
+    let message = format!("homeserver event endpoint returned HTTP {status}");
+    let error = if status == StatusCode::TOO_MANY_REQUESTS {
+        PubkyClientError::TooManyRequests429 { message }
+    } else if status.is_server_error() {
+        PubkyClientError::ServerError5xx { message }
+    } else {
+        PubkyClientError::RequestFailed { message }
+    };
+    Err(error.into())
+}
+
+async fn read_events_response(response: reqwest::Response) -> Result<String, EventProcessorError> {
+    validate_events_status(response.status())?;
+
+    let (buf, exceeded) = read_stream_capped(response.bytes_stream(), MAX_EVENTS_BODY)
+        .await
+        .map_err(|e| EventProcessorError::client_error(e.to_string()))?;
+    if exceeded {
+        REJECTED.add(1, &[KeyValue::new("reason", "size_exceeded")]);
+
+        return Err(EventProcessorError::FetchSizeExceeded(
+            buf.len() as u64,
+            MAX_EVENTS_BODY as u64,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
 
 /// Counter for events permanently rejected for exceeding a fetch size limit.
 static REJECTED: LazyLock<Counter<u64>> = LazyLock::new(|| {
@@ -280,18 +315,7 @@ impl HsEventProcessor {
                 .await
                 .map_err(|e| EventProcessorError::client_error(e.to_string()))?;
 
-            let (buf, exceeded) = read_stream_capped(response.bytes_stream(), MAX_EVENTS_BODY)
-                .await
-                .map_err(|e| EventProcessorError::client_error(e.to_string()))?;
-            if exceeded {
-                REJECTED.add(1, &[KeyValue::new("reason", "size_exceeded")]);
-
-                return Err(EventProcessorError::FetchSizeExceeded(
-                    buf.len() as u64,
-                    MAX_EVENTS_BODY as u64,
-                ));
-            }
-            String::from_utf8_lossy(&buf).into_owned()
+            read_events_response(response).await?
         };
 
         let lines: Vec<String> = response_text.trim().lines().map(String::from).collect();
@@ -525,5 +549,42 @@ mod tests {
 
         assert_eq!(batch.event_lines, vec!["garbage"]);
         assert!(batch.has_events());
+    }
+}
+
+#[cfg(test)]
+mod http_status_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn error_response_cannot_inject_an_event_or_cursor() {
+        let response = http::Response::builder()
+            .status(429)
+            .body("Rate limit exceeded\ncursor: 999999")
+            .unwrap();
+        let error = read_events_response(response.into()).await.unwrap_err();
+        assert!(error.is_too_many_requests());
+        let response = http::Response::builder()
+            .status(200)
+            .body("cursor: 15650")
+            .unwrap();
+        assert_eq!(
+            read_events_response(response.into()).await.unwrap(),
+            "cursor: 15650"
+        );
+    }
+
+    #[test]
+    fn throttle_is_an_error_instead_of_an_event_batch() {
+        let error = validate_events_status(StatusCode::TOO_MANY_REQUESTS).unwrap_err();
+        assert!(error.is_too_many_requests());
+        assert!(validate_events_status(StatusCode::OK).is_ok());
+        for status in [
+            StatusCode::FORBIDDEN,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::FOUND,
+        ] {
+            assert!(validate_events_status(status).is_err());
+        }
     }
 }

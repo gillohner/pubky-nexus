@@ -1,19 +1,22 @@
-use super::TEventProcessorRunner;
+use super::{HomeserverBackoff, TEventProcessorRunner};
 use crate::events::retry::RetryScheduler;
 use crate::events::{DefaultEventHandler, EventHandler};
 use crate::service::indexer::{HsEventProcessor, TEventProcessor};
-use crate::service::stats::{ProcessedStats, RunAllProcessorsStats};
+use crate::service::stats::{ProcessedStats, ProcessorRunStatus, RunAllProcessorsStats};
 use nexus_common::models::homeserver::Homeserver;
 use nexus_common::types::DynError;
 use nexus_common::WatcherConfig;
 use pubky_app_specs::PubkyId;
 use std::sync::Arc;
-use tokio::sync::watch::Receiver;
+use tokio::sync::{watch::Receiver, Mutex};
 use tracing::debug;
 
 pub struct HsEventProcessorRunner {
     /// See [WatcherConfig::events_limit]
     pub limit: u16,
+
+    /// Failed polls retain their cursor and pause before the next attempt.
+    pub backoff: Mutex<HomeserverBackoff>,
 
     /// Opt-in exclusive routing of explicitly tracked primary users.
     pub primary_user_indexing: bool,
@@ -33,6 +36,10 @@ impl HsEventProcessorRunner {
     pub fn from_config(config: &WatcherConfig, shutdown_rx: Receiver<bool>) -> Self {
         Self {
             limit: config.events_limit,
+            backoff: Mutex::new(HomeserverBackoff::new(
+                config.initial_backoff_secs,
+                config.max_backoff_secs,
+            )),
             primary_user_indexing: config.primary_user_indexing,
             event_handler: Arc::new(DefaultEventHandler::from_config(config)),
             shutdown_rx,
@@ -74,6 +81,19 @@ impl TEventProcessorRunner for HsEventProcessorRunner {
         Ok(vec![self.primary_homeserver.to_string()])
     }
 
+    async fn backoff_hs_should_skip(&self, hs_id: &str) -> bool {
+        self.backoff.lock().await.should_skip(hs_id)
+    }
+
+    async fn backoff_hs_record_result(&self, hs_id: &str, status: &ProcessorRunStatus) {
+        let mut backoff = self.backoff.lock().await;
+        if *status == ProcessorRunStatus::Ok {
+            backoff.record_success(hs_id);
+        } else {
+            backoff.record_failure(hs_id);
+        }
+    }
+
     async fn post_run(&self, stats: RunAllProcessorsStats) -> ProcessedStats {
         for individual_run_stat in &stats.stats {
             let hs_id = &individual_run_stat.hs_id;
@@ -83,5 +103,26 @@ impl TEventProcessorRunner for HsEventProcessorRunner {
         }
 
         ProcessedStats(stats)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_primary_poll_is_paused_and_success_resets_backoff() {
+        let (_, shutdown) = tokio::sync::watch::channel(false);
+        let runner = HsEventProcessorRunner::from_config(&WatcherConfig::default(), shutdown);
+        let hs = runner.primary_homeserver();
+        assert!(!runner.backoff_hs_should_skip(hs).await);
+        runner
+            .backoff_hs_record_result(hs, &ProcessorRunStatus::Error)
+            .await;
+        assert!(runner.backoff_hs_should_skip(hs).await);
+        runner
+            .backoff_hs_record_result(hs, &ProcessorRunStatus::Ok)
+            .await;
+        assert!(!runner.backoff_hs_should_skip(hs).await);
     }
 }
