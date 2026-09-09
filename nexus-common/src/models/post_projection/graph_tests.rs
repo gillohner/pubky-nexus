@@ -72,6 +72,10 @@ async fn checkpoint(graph: &Graph) -> Checkpoint {
 #[tokio::test]
 #[ignore = "requires an empty disposable Neo4j on localhost:17687"]
 async fn source_mutations_replay_atomically_under_concurrency() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_test_writer()
+        .try_init();
     let uri = std::env::var("NEXUS_PROJECTION_TEST_URI").expect("set the disposable Neo4j URI");
     assert_eq!(
         uri, "127.0.0.1:17687",

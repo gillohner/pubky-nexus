@@ -3041,6 +3041,7 @@ dependencies = [
  "opentelemetry_sdk 0.32.1",
  "pubky",
  "pubky-app-specs",
+ "rand 0.10.2",
  "redis",
  "serde",
  "serde_json",

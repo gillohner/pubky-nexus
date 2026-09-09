@@ -12,7 +12,15 @@ use neo4rs::{Error, Row};
 use crate::db::graph::{GraphOps, Query};
 
 const DEADLOCK_CODE: &str = "Neo.TransientError.Transaction.DeadlockDetected";
-const MAX_RETRIES: u32 = 3;
+// Eight concurrent checkpoint writers can require more than three aborted attempts.
+// Keep retries bounded and desynchronize contenders; only confirmed rollbacks qualify.
+const MAX_RETRIES: u32 = 8;
+const MAX_BACKOFF_MS: u64 = 1_000;
+
+fn retry_delay(attempt: u32) -> Duration {
+    let ceiling = (50_u64 << attempt.min(5)).min(MAX_BACKOFF_MS);
+    Duration::from_millis(rand::random_range(ceiling / 2..=ceiling))
+}
 
 pub(super) async fn fetch_mutation_row(
     graph: &dyn GraphOps,
@@ -21,12 +29,14 @@ pub(super) async fn fetch_mutation_row(
     for attempt in 0..=MAX_RETRIES {
         match execute_and_drain(graph, query.clone()).await {
             Err(error) if is_deadlock(&error) && attempt < MAX_RETRIES => {
+                let delay = retry_delay(attempt);
                 tracing::warn!(
                     query = query.label(),
                     attempt,
+                    delay_ms = delay.as_millis() as u64,
                     "Retrying aborted Neo4j mutation"
                 );
-                tokio::time::sleep(Duration::from_millis(50 * (1 << attempt))).await;
+                tokio::time::sleep(delay).await;
             }
             result => return result,
         }

@@ -131,3 +131,35 @@ fn deadlock_text_in_another_error_field_does_not_enable_retry() {
         message.replace("for PULL", "for RESET")
     )));
 }
+
+#[test]
+fn server_deadlock_with_message_before_code_is_classified() {
+    let message = concat!(
+        "unexpected response for PULL: Ok(Failure(Failure { metadata: BoltMap { value: {",
+        "BoltString { value: \"message\" }: String(BoltString { value: \"ForsetiClient lock cycle\" }), ",
+        "BoltString { value: \"code\" }: String(BoltString { value: ",
+        "\"Neo.TransientError.Transaction.DeadlockDetected\" })} } }))"
+    );
+    assert!(is_deadlock(&Error::UnexpectedMessage(message.into())));
+}
+
+#[tokio::test]
+async fn contention_can_recover_after_the_old_three_retry_budget() {
+    let mut attempts: Vec<_> = (0..4).map(|_| Ok(vec![Err(deadlock())])).collect();
+    attempts.push(Ok(vec![Ok(row(true))]));
+    let graph = ScriptedGraph::new(attempts);
+    let result = fetch_mutation_row(&graph, query()).await.unwrap().unwrap();
+    assert!(result.get::<bool>("flag").unwrap());
+    assert_eq!(graph.queries.lock().unwrap().len(), 5);
+}
+
+#[test]
+fn jitter_has_a_positive_floor_and_capped_exponential_ceiling() {
+    for attempt in [0, 1, 4, 5, 8, u32::MAX] {
+        let ceiling = (50_u64 << attempt.min(5)).min(super::MAX_BACKOFF_MS);
+        for _ in 0..32 {
+            let delay = super::retry_delay(attempt).as_millis() as u64;
+            assert!((ceiling / 2..=ceiling).contains(&delay));
+        }
+    }
+}
