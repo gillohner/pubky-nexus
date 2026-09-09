@@ -1205,6 +1205,7 @@ async fn test_future_events_not_picked_up() -> Result<()> {
 }
 
 #[tokio_shared_rt::test(shared)]
+#[ignore = "requires explicit disposable Neo4j and Redis tunnel configuration; see docs/primary-user-indexing.md"]
 async fn old_primary_retry_is_delegated_before_it_can_delete_newer_user_state() -> Result<()> {
     use nexus_common::models::user::UserHsCursor;
     use nexus_common::utils::test_utils::random_pubky_id;

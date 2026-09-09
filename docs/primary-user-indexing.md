@@ -48,3 +48,20 @@ Redis integration tests additionally cover global cursor advancement during
 delegation, ordered per-user retry retention, target selection/blacklisting, and
 removal of stale primary retries. These integration tests require isolated test
 stores and must not run against production Redis or Neo4j.
+
+The three primary ownership integration regressions are ignored by default,
+because their setup refuses shared/default database endpoints. After provisioning
+disposable stores and forwarding their ports locally, run each filter explicitly:
+
+```sh
+export NEXUS_PRIMARY_TEST_NEO4J_URI=bolt://127.0.0.1:17687
+export NEXUS_PRIMARY_TEST_REDIS_URI=redis://127.0.0.1:16379
+cargo test -p nexus-watcher --test mod tracked_primary_user_is_delegated_without_resetting_global_or_user_history -- --ignored
+cargo test -p nexus-watcher --test mod primary_user_lane_keeps_failed_event_at_cursor_without_queued_retry -- --ignored
+cargo test -p nexus-watcher --test mod old_primary_retry_is_delegated_before_it_can_delete_newer_user_state -- --ignored
+```
+
+Both environment variables are required and only these exact loopback endpoints
+are accepted. Neo4j must have authentication disabled. Run the separate empty-graph
+projection concurrency fixture first: the primary integration tests create graph
+nodes, and the concurrency fixture deliberately refuses a nonempty graph.

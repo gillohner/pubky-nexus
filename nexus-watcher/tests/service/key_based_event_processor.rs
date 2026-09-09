@@ -1088,6 +1088,7 @@ impl EventHandler for ShutdownOnFirstHandle {
 }
 
 #[tokio_shared_rt::test(shared)]
+#[ignore = "requires explicit disposable Neo4j and Redis tunnel configuration; see docs/primary-user-indexing.md"]
 async fn primary_user_lane_keeps_failed_event_at_cursor_without_queued_retry(
 ) -> Result<(), DynError> {
     use nexus_common::models::user::UserHsCursor;

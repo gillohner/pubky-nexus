@@ -770,6 +770,7 @@ async fn test_cursor_not_persisted_when_batch_stops() -> Result<()> {
 }
 
 #[tokio_shared_rt::test(shared)]
+#[ignore = "requires explicit disposable Neo4j and Redis tunnel configuration; see docs/primary-user-indexing.md"]
 async fn tracked_primary_user_is_delegated_without_resetting_global_or_user_history() -> Result<()>
 {
     use nexus_common::models::user::UserHsCursor;
