@@ -24,6 +24,9 @@ pub struct PostDetails {
     pub kind: PostKind,
     pub uri: String,
     pub attachments: Option<Vec<String>>,
+    /// Original parent URI. Its presence makes this post a reply, regardless of target scheme.
+    #[serde(default)]
+    pub parent: Option<String>,
     /// Original embed URI, independent of the normalized Resource identity.
     #[serde(default)]
     pub embed: Option<String>,
@@ -91,14 +94,42 @@ impl PostDetails {
         if is_edit {
             return Ok(());
         }
+        self.add_to_streams(author_id, parent_key_wrapper).await
+    }
+
+    pub async fn replace_in_streams(
+        &self,
+        author_id: &str,
+        previous_parent_key: Option<(String, String)>,
+        current_parent_key: Option<(String, String)>,
+    ) -> RedisResult<()> {
+        PostStream::remove_from_timeline_sorted_set(author_id, &self.id).await?;
+        PostStream::remove_from_per_user_sorted_set(author_id, &self.id).await?;
+        PostStream::remove_from_replies_per_user_sorted_set(author_id, &self.id).await?;
+        if let Some((parent_author, parent_post)) = previous_parent_key {
+            PostStream::remove_from_post_reply_sorted_set(
+                &[&parent_author, &parent_post],
+                author_id,
+                &self.id,
+            )
+            .await?;
+        }
+        self.add_to_streams(author_id, current_parent_key).await
+    }
+
+    async fn add_to_streams(
+        &self,
+        author_id: &str,
+        parent_key_wrapper: Option<(String, String)>,
+    ) -> RedisResult<()> {
         // Replies are not indexed in the global feeds — they live in the
         // per-parent reply set instead.
-        match parent_key_wrapper {
-            None => {
+        match (self.parent.is_some(), parent_key_wrapper) {
+            (false, _) => {
                 PostStream::add_to_timeline_sorted_set(self).await?;
                 PostStream::add_to_per_user_sorted_set(self).await?;
             }
-            Some((parent_author_id, parent_post_id)) => {
+            (true, Some((parent_author_id, parent_post_id))) => {
                 PostStream::add_to_post_reply_sorted_set(
                     &[&parent_author_id, &parent_post_id],
                     author_id,
@@ -108,6 +139,7 @@ impl PostDetails {
                 .await?;
                 PostStream::add_to_replies_per_user_sorted_set(self).await?;
             }
+            (true, None) => PostStream::add_to_replies_per_user_sorted_set(self).await?,
         }
         Ok(())
     }
@@ -126,6 +158,7 @@ impl PostDetails {
             author: author_id.to_string(),
             kind: homeserver_post.kind,
             attachments: homeserver_post.attachments,
+            parent: homeserver_post.parent,
             embed: homeserver_post.embed,
             lock: homeserver_post.lock,
         }
@@ -158,16 +191,17 @@ impl PostDetails {
         author_id: &str,
         post_id: &str,
         parent_post_key_wrapper: Option<(String, String)>,
+        is_reply: bool,
     ) -> RedisResult<()> {
         // Delete post details on Redis
         Self::remove_from_index_multiple_json(&[&[author_id, post_id]]).await?;
         // The replies are not indexed in the global feeds
-        match parent_post_key_wrapper {
-            None => {
+        match (is_reply, parent_post_key_wrapper) {
+            (false, _) => {
                 PostStream::remove_from_timeline_sorted_set(author_id, post_id).await?;
                 PostStream::remove_from_per_user_sorted_set(author_id, post_id).await?;
             }
-            Some((parent_author_id, parent_post_id)) => {
+            (true, Some((parent_author_id, parent_post_id))) => {
                 PostStream::remove_from_post_reply_sorted_set(
                     &[&parent_author_id, &parent_post_id],
                     author_id,
@@ -175,6 +209,9 @@ impl PostDetails {
                 )
                 .await?;
                 PostStream::remove_from_replies_per_user_sorted_set(author_id, post_id).await?;
+            }
+            (true, None) => {
+                PostStream::remove_from_replies_per_user_sorted_set(author_id, post_id).await?
             }
         }
         Ok(())
@@ -185,6 +222,7 @@ impl PostDetails {
     pub fn content_differs_from(&self, other: &PostDetails) -> bool {
         self.content != other.content
             || self.attachments != other.attachments
+            || self.parent != other.parent
             || self.embed != other.embed
     }
 
@@ -211,6 +249,7 @@ mod tests {
             kind: PostKind::Short,
             uri: "uri1".into(),
             attachments: Some(vec!["image1.jpg".into(), "image2.jpg".into()]),
+            parent: None,
             embed: None,
             lock: None,
         };
@@ -284,6 +323,7 @@ mod tests {
             kind: PostKind::Short,
             uri: "u".into(),
             attachments: None,
+            parent: None,
             embed: None,
             lock: None,
         };

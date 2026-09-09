@@ -56,19 +56,26 @@ pub fn create_post(
     cypher.push_str(
         "
         MATCH (author:User {id: $author_id})
-        OPTIONAL MATCH (u)-[:AUTHORED]->(existing_post:Post {id: $post_id})
+        OPTIONAL MATCH (author)-[:AUTHORED]->(existing_post:Post {id: $post_id})
         MERGE (author)-[:AUTHORED]->(new_post:Post {id: $post_id})
         ON CREATE SET new_post.indexed_at = $indexed_at
         // Preserve the already-checked reply/repost dependencies across updates.
         WITH *
         CALL {
             WITH new_post
-            OPTIONAL MATCH (new_post)-[old:EMBEDS]->(target:Resource)
-            WHERE $resource_id IS NULL OR target.id <> $resource_id
+            OPTIONAL MATCH (new_post)-[old:EMBEDS|REPLIED]->(target:Resource)
             DELETE old
             WITH DISTINCT target
-            WHERE target IS NOT NULL AND NOT EXISTS { (target)--() }
+            WHERE target IS NOT NULL
+              AND target.id <> COALESCE($parent_resource_id, '')
+              AND target.id <> COALESCE($embed_resource_id, '')
+              AND NOT EXISTS { (target)--() }
             DELETE target
+        }
+        CALL {
+            WITH new_post
+            OPTIONAL MATCH (new_post)-[old:REPLIED]->(:Post)
+            DELETE old
         }
         CALL {
             WITH new_post
@@ -92,13 +99,21 @@ pub fn create_post(
             new_post.kind = $kind,
             new_post.attachments = $attachments,
             new_post.lock = $lock,
+            new_post.parent = $parent,
             new_post.embed = $embed
         WITH new_post, existing_post, checkpoint
         CALL {
             WITH new_post
-            WITH new_post WHERE $resource_id IS NOT NULL
-            MERGE (r:Resource {id: $resource_id})
-            ON CREATE SET r.uri = $resource_uri, r.scheme = $resource_scheme, r.indexed_at = $indexed_at
+            WITH new_post WHERE $parent_resource_id IS NOT NULL
+            MERGE (r:Resource {id: $parent_resource_id})
+            ON CREATE SET r.uri = $parent_resource_uri, r.scheme = $parent_resource_scheme, r.indexed_at = $indexed_at
+            MERGE (new_post)-[:REPLIED {app: 'pubky.app'}]->(r)
+        }
+        CALL {
+            WITH new_post
+            WITH new_post WHERE $embed_resource_id IS NOT NULL
+            MERGE (r:Resource {id: $embed_resource_id})
+            ON CREATE SET r.uri = $embed_resource_uri, r.scheme = $embed_resource_scheme, r.indexed_at = $indexed_at
             MERGE (new_post)-[:EMBEDS {app: 'pubky.app'}]->(r)
         }
         ",
@@ -107,6 +122,13 @@ pub fn create_post(
     cypher.push_str(&prune_history());
     cypher.push_str("RETURN existing_post IS NOT NULL AS flag");
 
+    let parent_resource = post
+        .parent
+        .as_deref()
+        .filter(|_| post_relationships.replied.is_none())
+        .map(normalize_uri)
+        .transpose()
+        .map_err(GraphError::UriParseError)?;
     let embedded_resource = post
         .embed
         .as_deref()
@@ -118,30 +140,37 @@ pub fn create_post(
         .param("author_id", post.author.to_string())
         .param("post_id", post.id.to_string())
         .param("source_uri", post.uri.clone())
-        .param(
-            "source_parent",
-            post_relationships
-                .replied
-                .as_ref()
-                .and_then(|uri| uri.try_to_uri_str().ok()),
-        )
+        .param("source_parent", post.parent.clone())
         .param("content", post.content.to_string())
         .param("indexed_at", post.indexed_at)
         .param("kind", post.kind.as_str())
         .param("attachments", post.attachments.clone().unwrap_or_default())
         // Pass Option directly so None clears the property; "" would read back as Some("").
         .param("lock", post.lock.clone())
+        .param("parent", post.parent.clone())
         .param("embed", post.embed.clone())
         .param(
-            "resource_id",
+            "parent_resource_id",
+            parent_resource.as_ref().map(|(uri, _)| resource_id(uri)),
+        )
+        .param(
+            "parent_resource_uri",
+            parent_resource.as_ref().map(|(uri, _)| uri.clone()),
+        )
+        .param(
+            "parent_resource_scheme",
+            parent_resource.map(|(_, scheme)| scheme),
+        )
+        .param(
+            "embed_resource_id",
             embedded_resource.as_ref().map(|(uri, _)| resource_id(uri)),
         )
         .param(
-            "resource_uri",
+            "embed_resource_uri",
             embedded_resource.as_ref().map(|(uri, _)| uri.clone()),
         )
         .param(
-            "resource_scheme",
+            "embed_resource_scheme",
             embedded_resource.map(|(_, scheme)| scheme),
         );
 

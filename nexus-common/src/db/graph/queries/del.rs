@@ -27,7 +27,7 @@ pub fn delete_post(author_id: &str, post_id: &str) -> Query {
     let cypher = format!(
         "{BEGIN_MUTATION}
          MATCH (u:User {{id: $author_id}})-[:AUTHORED]->(p:Post {{id: $post_id}})
-         OPTIONAL MATCH (p)-[:EMBEDS]->(resource:Resource)
+         OPTIONAL MATCH (p)-[:EMBEDS|REPLIED]->(resource:Resource)
          WITH checkpoint, p, collect(resource) AS resources
          {RECORD_DELETE}
          DETACH DELETE p

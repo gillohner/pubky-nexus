@@ -25,7 +25,7 @@ pub fn inventory(after: Option<&str>, kinds: &[String], limit: usize) -> Query {
                 revision: toString(coalesce(p.projection_revision, 0)),
                 uri: 'pubky://' + author.id + '/pub/pubky.app/posts/' + p.id,
                 post: {{kind: p.kind, content: p.content,
-                       parent: CASE WHEN p.projection_revision IS NULL THEN legacy_parent ELSE p.source_parent END,
+                       parent: CASE WHEN p.projection_revision IS NULL THEN coalesce(p.parent, legacy_parent) ELSE p.source_parent END,
                        embed: p.embed, attachments: p.attachments, lock: p.lock}}
             }} AS item
             ORDER BY key

@@ -28,7 +28,7 @@ pub async fn sync_put(
     debug!("Indexing post");
     let post = post.into();
     // Create PostDetails object
-    let post_details = PostDetails::from_homeserver(post.clone(), &author_id, &post_id);
+    let mut post_details = PostDetails::from_homeserver(post.clone(), &author_id, &post_id);
     // We avoid indexing replies into global feed sorted sets
     let is_reply = post.parent.is_some();
     let is_collection = post.kind == PostKind::Collection;
@@ -96,7 +96,7 @@ pub async fn sync_put(
 
     if existed {
         if let Some(previous) = &previous_relationships {
-            refresh_repost_targets(previous, &post_relationships).await?;
+            refresh_post_targets(previous, &post_relationships).await?;
         }
         post_relationships
             .put_to_index(&author_id, &post_id)
@@ -104,7 +104,21 @@ pub async fn sync_put(
         // If the post existed, let's confirm this is an edit. Is the content different?
         match PostDetails::get_from_index(&author_id, &post_id).await? {
             Some(existing_details) => {
+                post_details.indexed_at = existing_details.indexed_at;
                 let was_collection = existing_details.kind == PostKind::Collection;
+                let parent_changed = existing_details.parent != post_details.parent;
+                if parent_changed {
+                    post_details
+                        .replace_in_streams(
+                            &author_id,
+                            previous_relationships.as_ref().and_then(reply_parent_key),
+                            reply_parent_key(&post_relationships),
+                        )
+                        .await?;
+                    PostCounts::delete(&author_id, &post_id, true).await?;
+                    PostCounts::reindex(&author_id, &post_id).await?;
+                    UserCounts::reindex(&author_id).await?;
+                }
                 // Persist the new PostDetails (incl. kind) BEFORE moving the
                 // `collections` counter. If the counter moved first and a later
                 // step failed, a retry would re-read the old kind, see the same
@@ -310,13 +324,27 @@ pub async fn sync_put(
     Ok(())
 }
 
-async fn refresh_repost_targets(
+fn reply_parent_key(relationships: &PostRelationships) -> Option<(String, String)> {
+    relationships.replied.as_ref().and_then(|uri| {
+        let Resource::Post(post_id) = &uri.resource else {
+            return None;
+        };
+        Some((uri.user_id.to_string(), post_id.clone()))
+    })
+}
+
+async fn refresh_post_targets(
     previous: &PostRelationships,
     current: &PostRelationships,
 ) -> Result<(), EventProcessorError> {
-    for target in [&previous.reposted, &current.reposted]
-        .into_iter()
-        .flatten()
+    for target in [
+        &previous.replied,
+        &previous.reposted,
+        &current.replied,
+        &current.reposted,
+    ]
+    .into_iter()
+    .flatten()
     {
         if let Resource::Post(id) = &target.resource {
             // Recompute, rather than increment/decrement, so retries cannot drift.
@@ -447,18 +475,20 @@ async fn sync_edit(
 
     // Handle "A reply to your post was edited/deleted"
     if let Some(parent) = &post.parent {
-        let parsed_parent =
-            ParsedUri::try_from(parent.as_str()).map_err(EventProcessorError::generic)?;
-        Notification::post_children_changed(
-            &author_id,
-            parent,
-            &parsed_parent.user_id,
-            &changed_uri,
-            PostChangedSource::Reply,
-            &change_type,
-            changed_kind,
-        )
-        .await?;
+        if let Ok(parsed_parent) = ParsedUri::try_from(parent.as_str()) {
+            if matches!(parsed_parent.resource, Resource::Post(_)) {
+                Notification::post_children_changed(
+                    &author_id,
+                    parent,
+                    &parsed_parent.user_id,
+                    &changed_uri,
+                    PostChangedSource::Reply,
+                    &change_type,
+                    changed_kind,
+                )
+                .await?;
+            }
+        }
     };
 
     Ok(())
@@ -527,10 +557,16 @@ pub async fn del(
     match execute_graph_operation(query).await? {
         OperationOutcome::CreatedOrDeleted => sync_del(author_id, post_id).await?,
         OperationOutcome::Updated => {
-            let existing_relationships = PostRelationships::get_by_id(&author_id, &post_id).await?;
-            let parent = existing_relationships
-                .and_then(|rel| rel.replied)
-                .and_then(|replied_uri| replied_uri.try_to_uri_str().ok());
+            let parent_from_details = PostDetails::get_by_id(&author_id, &post_id)
+                .await?
+                .and_then(|details| details.parent);
+            let parent = match parent_from_details {
+                some @ Some(_) => some,
+                None => PostRelationships::get_by_id(&author_id, &post_id)
+                    .await?
+                    .and_then(|value| value.replied)
+                    .and_then(|uri| uri.try_to_uri_str().ok()),
+            };
 
             // We store a dummy that is still a reply if it was one already.
             let dummy_deleted_post = PostInput {
@@ -566,11 +602,11 @@ pub async fn sync_del(author_id: PubkyId, post_id: String) -> Result<(), EventPr
     // Recover the kind BEFORE removing the gate below. PostDetails is still present
     // (graph-delete runs last). Doing this after the gate deletion would let a
     // failed lookup strand the decrements on retry (gate gone, post_in_index false).
-    let deleted_kind = if post_in_index {
-        post_kind(&author_id, &post_id).await?
-    } else {
-        PostKind::Unknown
-    };
+    let post_details = PostDetails::get_by_id(&author_id, &post_id).await?;
+    let deleted_kind = post_details
+        .as_ref()
+        .map(|details| details.kind.clone())
+        .unwrap_or(PostKind::Unknown);
     let is_collection = deleted_kind == PostKind::Collection;
 
     // 2. Atomically commit the cleanup decision: remove the gate as the very
@@ -592,8 +628,10 @@ pub async fn sync_del(author_id: PubkyId, post_id: String) -> Result<(), EventPr
     // If the post is a reply, cannot delete from the main feeds
     // In the main feed, we just include the root posts and reposts
     // It could be a situation that relationship would not exist and we will treat the post as a not reply
-    let is_reply =
-        matches!(&post_relationships_opt, Some(relationship) if relationship.replied.is_some());
+    let is_reply = post_details
+        .as_ref()
+        .is_some_and(|details| details.parent.is_some())
+        || matches!(&post_relationships_opt, Some(relationship) if relationship.replied.is_some());
 
     // DELETE TO INDEX - PHASE 1, decrease post counts
     let indexing_results = nexus_common::traced_join!(
@@ -750,9 +788,14 @@ pub async fn sync_del(author_id: PubkyId, post_id: String) -> Result<(), EventPr
     }
 
     // PHASE 4: Final Redis cleanup of PostDetails (idempotent JSON DEL + ZREM).
-    PostDetails::delete_from_index(&author_id, &post_id, reply_parent_post_key_wrapper)
-        .instrument(tracing::info_span!("index.delete", phase = "post_details"))
-        .await?;
+    PostDetails::delete_from_index(
+        &author_id,
+        &post_id,
+        reply_parent_post_key_wrapper,
+        is_reply,
+    )
+    .instrument(tracing::info_span!("index.delete", phase = "post_details"))
+    .await?;
 
     // PHASE 5: Graph deletion LAST — survives until all Redis cleanup completes,
     // so a partial failure leaves the graph node available for retry to re-enter

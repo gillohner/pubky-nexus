@@ -41,8 +41,23 @@ async fn existing_endpoints_return_and_filter_custom_posts() -> Result<()> {
     let details = utils::get_request(&format!("{path}/details")).await?;
     assert_eq!(details["kind"], "event");
     assert_eq!(details["content"], "picnic");
+    assert_eq!(details["parent"], serde_json::Value::Null);
     assert_eq!(details["embed"], uri);
     assert_eq!(utils::get_request(&path).await?["details"], details);
+
+    let external_reply = PubkyAppPost::default().create_id();
+    let blob = serde_json::to_vec(
+        &json!({"kind":"event","content":"reply and share","parent":uri,"embed":uri}),
+    )?;
+    let input = PostInput::from_bytes(&blob, &external_reply).map_err(anyhow::Error::msg)?;
+    let relationships = PostRelationships::from_homeserver(&input);
+    let external_details = PostDetails::from_homeserver(input, &author, &external_reply);
+    external_details.put_to_graph(&relationships).await?;
+    external_details.put_to_index(&author, None, false).await?;
+    let external_path = format!("/v0/post/{author}/{external_reply}/details");
+    let returned = utils::get_request(&external_path).await?;
+    assert_eq!(returned["parent"], uri);
+    assert_eq!(returned["embed"], uri);
 
     let root = format!("/v0/stream/posts?source=author&author_id={author}");
     let all = utils::get_request(&root).await?;
@@ -99,6 +114,7 @@ async fn existing_endpoints_return_and_filter_custom_posts() -> Result<()> {
         )
         .await?;
     }
+    ids.push(external_reply);
     for id in ids {
         exec_single_row(queries::del::delete_post(&author, &id)).await?;
     }

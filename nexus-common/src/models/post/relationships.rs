@@ -31,12 +31,14 @@ mod parsed_uri_option {
 
 #[derive(Serialize, Deserialize, ToSchema, Default, Debug)]
 pub struct PostRelationships {
-    /// If set, URI of the post this is a reply to
+    /// If set, URI of the Pubky Post this is a reply to.
+    /// Universal parent targets remain in `PostDetails.parent` instead.
     #[schema(value_type = Option<String>)]
     #[serde(with = "parsed_uri_option")]
     pub replied: Option<ParsedUri>,
 
-    /// If set, URI of the post this post is reposting
+    /// If set, URI of the Pubky Post this post is reposting.
+    /// Universal embed targets remain in `PostDetails.embed` instead.
     #[schema(value_type = Option<String>)]
     #[serde(with = "parsed_uri_option")]
     pub reposted: Option<ParsedUri>,
@@ -112,7 +114,9 @@ impl PostRelationships {
         let mut relationship = Self::default();
 
         if let Some(parent_uri) = &post.parent {
-            relationship.replied = ParsedUri::try_from(parent_uri.as_str()).ok()
+            relationship.replied = ParsedUri::try_from(parent_uri.as_str())
+                .ok()
+                .filter(|uri| matches!(uri.resource, Resource::Post(_)))
         }
 
         // Only a post can be reposted; other embed targets stay plain embeds.

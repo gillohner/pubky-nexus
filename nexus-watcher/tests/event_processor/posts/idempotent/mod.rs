@@ -65,7 +65,7 @@ pub(super) async fn simulate_partial_del_cleanup_root(user_id: &str, post_id: &s
     let post_key: &[&str] = &[user_id, post_id];
     PostRelationships::remove_from_index_multiple_json(&[post_key]).await?;
     UserCounts::decrement(&pubky_id(user_id)?, "posts", None).await?;
-    PostDetails::delete_from_index(user_id, post_id, None).await?;
+    PostDetails::delete_from_index(user_id, post_id, None, false).await?;
     PostCounts::delete(user_id, post_id, true).await?;
     Ok(())
 }
@@ -121,7 +121,7 @@ pub(super) async fn simulate_partial_del_cleanup_child(
     .await?;
     // PostCounts / PostDetails removed for the child.
     PostCounts::delete(author_id, post_id, remove_from_feeds).await?;
-    PostDetails::delete_from_index(author_id, post_id, delete_parent_tuple).await?;
+    PostDetails::delete_from_index(author_id, post_id, delete_parent_tuple, true).await?;
     Ok(())
 }
 

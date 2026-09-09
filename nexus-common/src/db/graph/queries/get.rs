@@ -39,6 +39,12 @@ pub fn get_post_by_id(author_id: &str, post_id: &str) -> Query {
                 // Avoids enum deserialization ERROR
                 kind: COALESCE(p.kind, 'short'),
                 attachments: p.attachments,
+                parent: COALESCE(
+                    p.parent,
+                    CASE WHEN parent_post IS NULL THEN null
+                         ELSE 'pubky://' + author.id + '/pub/pubky.app/posts/' + parent_post.id
+                    END
+                ),
                 embed: p.embed,
                 lock: p.lock
             } as details,
@@ -68,7 +74,7 @@ pub fn post_counts(author_id: &str, post_id: &str) -> Query {
                 replies: COUNT { (p)<-[:REPLIED]-() },
                 reposts: COUNT { (p)<-[:REPOSTED]-() }
             } AS counts,
-            EXISTS { (p)-[:REPLIED]->(:Post) } AS is_reply
+            EXISTS { (p)-[:REPLIED]->() } AS is_reply
     ",
     )
     .param("author_id", author_id)
@@ -461,7 +467,9 @@ pub fn resource_stream(
 
     let mut cypher = String::from("MATCH (r:Resource)\n");
     if app.is_some() {
-        cypher.push_str("WHERE EXISTS { ()-[ref:TAGGED|EMBEDS]->(r) WHERE ref.app = $app }\n");
+        cypher.push_str(
+            "WHERE EXISTS { ()-[ref:TAGGED|EMBEDS|REPLIED]->(r) WHERE ref.app = $app }\n",
+        );
     }
     cypher.push_str("OPTIONAL MATCH (tagger:User)-[t:TAGGED]->(r)\n");
 
@@ -689,7 +697,7 @@ const USER_COUNT_FIELDS: &[(&str, &str)] = &[
     ("posts", "COUNT { (u)-[:AUTHORED]->(:Post) }"),
     (
         "replies",
-        "COUNT { (u)-[:AUTHORED]->(:Post)-[:REPLIED]->(:Post) }",
+        "COUNT { (u)-[:AUTHORED]->(:Post)-[:REPLIED]->() }",
     ),
     (
         "collections",
@@ -1163,7 +1171,7 @@ pub fn post_stream(
     if !matches!(source, StreamSource::Bookmarks { .. }) {
         append_condition(
             &mut cypher,
-            "NOT ( (p)-[:REPLIED]->(:Post) )",
+            "NOT ( (p)-[:REPLIED]->() )",
             &mut where_clause_applied,
         );
     }
