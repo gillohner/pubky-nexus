@@ -19,3 +19,25 @@ pub async fn setup() -> Result<Vec<MockEventProcessor>> {
 
     Ok(Vec::new())
 }
+
+/// Refuse default/shared stores for opt-in primary ownership integration tests.
+pub async fn setup_primary_disposable() -> Result<()> {
+    let neo4j = std::env::var("NEXUS_PRIMARY_TEST_NEO4J_URI")?;
+    let redis = std::env::var("NEXUS_PRIMARY_TEST_REDIS_URI")?;
+    anyhow::ensure!(
+        neo4j == "bolt://127.0.0.1:17687",
+        "requires disposable Neo4j tunnel"
+    );
+    anyhow::ensure!(
+        redis == "redis://127.0.0.1:16379",
+        "requires disposable Redis tunnel"
+    );
+    let mut config = StackConfig::default();
+    config.db.neo4j.uri = neo4j;
+    config.db.neo4j.password = "unused".into();
+    config.db.redis = redis;
+    StackManager::setup(&config)
+        .await
+        .map_err(|error| Error::msg(format!("could not initialise disposable stack: {error}")))?;
+    Ok(())
+}

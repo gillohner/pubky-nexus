@@ -773,7 +773,7 @@ async fn test_cursor_not_persisted_when_batch_stops() -> Result<()> {
 async fn tracked_primary_user_is_delegated_without_resetting_global_or_user_history() -> Result<()>
 {
     use nexus_common::models::user::UserHsCursor;
-    setup().await?;
+    super::utils::setup_primary_disposable().await?;
     let user_id = random_user_id();
     let handler = create_mock_handler(Ok(()), None);
     let mut processor = build_processor_at_cursor(

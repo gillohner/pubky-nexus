@@ -1091,7 +1091,7 @@ impl EventHandler for ShutdownOnFirstHandle {
 async fn primary_user_lane_keeps_failed_event_at_cursor_without_queued_retry(
 ) -> Result<(), DynError> {
     use nexus_common::models::user::UserHsCursor;
-    setup().await?;
+    super::utils::setup_primary_disposable().await?;
     let (_, homeserver) = create_homeserver().await?;
     let hs_id = homeserver.id.to_string();
     let user_id = create_user_on_homeserver(&homeserver).await?;
@@ -1100,10 +1100,10 @@ async fn primary_user_lane_keeps_failed_event_at_cursor_without_queued_retry(
         stream_event(9, &user_id, "/pub/pubky.app/profile.json")?,
         stream_event(10, &user_id, "/pub/pubky.app/posts/003286NSMY490")?,
     ]]));
-    let handler = create_mock_handler(
-        Err(EventProcessorError::Generic("transient failure".into())),
-        None,
-    );
+    let failure = EventProcessorError::Generic("transient failure".into());
+    assert!(!failure.should_not_retry_now());
+    assert!(RetryScheduler::should_enqueue_related_event(&failure));
+    let handler = create_mock_handler(Err(failure), None);
     let mut processor = processor(homeserver, handler.clone(), source);
     let store = new_in_memory_store();
     let inner = Arc::get_mut(&mut processor).unwrap();

@@ -1208,7 +1208,7 @@ async fn test_future_events_not_picked_up() -> Result<()> {
 async fn old_primary_retry_is_delegated_before_it_can_delete_newer_user_state() -> Result<()> {
     use nexus_common::models::user::UserHsCursor;
     use nexus_common::utils::test_utils::random_pubky_id;
-    setup().await?;
+    super::utils::setup_primary_disposable().await?;
     let user_id = random_pubky_id().to_string();
     let hs_id = random_pubky_id().to_string();
     UserHsCursor::init(&user_id, &hs_id).await?;
