@@ -4,6 +4,17 @@ use futures::TryStreamExt;
 use neo4rs::Row;
 use serde::de::DeserializeOwned;
 
+mod retry;
+
+/// Exercise the production mutation retry boundary against a disposable test graph.
+#[cfg(test)]
+pub(crate) async fn fetch_mutation_row_for_test(
+    graph: &dyn super::GraphOps,
+    query: Query,
+) -> neo4rs::Result<Option<Row>> {
+    retry::fetch_mutation_row(graph, query).await
+}
+
 /// Represents the outcome of a mutation-like query in the graph database.
 #[derive(Debug)]
 pub enum OperationOutcome {
@@ -25,9 +36,15 @@ pub enum OperationOutcome {
 ///
 /// If no rows are returned, this function returns [`OperationOutcome::MissingDependency`], typically
 /// indicating a missing dependency or an unmatched query condition.
+/// The complete result is consumed before returning. Server-confirmed deadlock rollbacks
+/// retry the same query up to three times; ambiguous connection failures are returned.
 pub async fn execute_graph_operation(query: Query) -> GraphResult<OperationOutcome> {
     // The "flag" field indicates a specific condition in the query
-    let maybe_flag = fetch_key_from_graph(query, "flag").await?;
+    let graph = get_neo4j_graph()?;
+    let maybe_flag = retry::fetch_mutation_row(graph.as_ref(), query)
+        .await?
+        .map(|row| row.get::<bool>("flag"))
+        .transpose()?;
     match maybe_flag {
         Some(true) => Ok(OperationOutcome::Updated),
         Some(false) => Ok(OperationOutcome::CreatedOrDeleted),

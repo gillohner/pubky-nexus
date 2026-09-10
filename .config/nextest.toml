@@ -1,0 +1,5 @@
+# This API test temporarily adds an author to the shared fixture graph. Prevent
+# global ranking queries from caching that temporary author before cleanup.
+[[profile.default.overrides]]
+filter = 'package(nexus-webapi) & binary(custom_posts)'
+threads-required = "num-test-threads"

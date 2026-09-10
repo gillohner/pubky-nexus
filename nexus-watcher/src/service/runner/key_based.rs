@@ -19,6 +19,9 @@ pub struct KeyBasedEventProcessorRunner {
     /// See [WatcherConfig::key_based_events_limit]
     pub limit: u16,
 
+    /// Opt-in exclusive routing of explicitly tracked primary users.
+    pub primary_user_indexing: bool,
+
     /// See [WatcherConfig::monitored_homeservers_limit]
     pub monitored_hs_limit: usize,
 
@@ -45,8 +48,12 @@ pub struct KeyBasedEventProcessorRunner {
 impl KeyBasedEventProcessorRunner {
     /// Creates a new instance from the provided configuration
     pub fn from_config(config: &WatcherConfig, shutdown_rx: Receiver<bool>) -> Self {
+        if config.primary_user_indexing {
+            warn!("Primary user indexing enabled: keep this setting enabled while global history trails delegated users; disabling or rolling back requires an operator migration (docs/primary-user-indexing.md)");
+        }
         Self {
             limit: config.key_based_events_limit,
+            primary_user_indexing: config.primary_user_indexing,
             monitored_hs_limit: config.monitored_homeservers_limit,
             event_handler: Arc::new(DefaultEventHandler::from_config(config)),
             event_source: Arc::new(PubkyKeyBasedEventSource),
@@ -90,6 +97,8 @@ impl TEventProcessorRunner for KeyBasedEventProcessorRunner {
         Ok(Arc::new(KeyBasedEventProcessor {
             homeserver_id,
             limit: self.limit,
+            primary_user_indexing: self.primary_user_indexing
+                && hs_id == self.primary_homeserver.as_ref(),
             event_handler: self.event_handler.clone(),
             event_source: self.event_source.clone(),
             user_not_found_backoff: self.user_not_found_backoff.clone(),
@@ -102,6 +111,13 @@ impl TEventProcessorRunner for KeyBasedEventProcessorRunner {
     async fn pre_run(&self) -> Result<Vec<String>, DynError> {
         let mut hs_ids = self.hs_by_priority().await?;
         hs_ids.truncate(self.monitored_hs_limit);
+        if self.primary_user_indexing
+            && !self
+                .hs_blacklist
+                .is_blacklisted(self.primary_homeserver.as_ref())
+        {
+            hs_ids.insert(0, self.primary_homeserver.to_string());
+        }
         Ok(hs_ids)
     }
 

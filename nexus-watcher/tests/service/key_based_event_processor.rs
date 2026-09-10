@@ -992,6 +992,7 @@ fn processor_with_options(
     hs_blacklist: HsBlacklist,
 ) -> Arc<KeyBasedEventProcessor> {
     Arc::new(KeyBasedEventProcessor {
+        primary_user_indexing: false,
         homeserver_id: homeserver.id,
         limit,
         event_handler: handler,
@@ -1084,4 +1085,48 @@ impl EventHandler for ShutdownOnFirstHandle {
 
         Ok(())
     }
+}
+
+#[tokio_shared_rt::test(shared)]
+#[ignore = "requires explicit disposable Neo4j and Redis tunnel configuration; see docs/primary-user-indexing.md"]
+async fn primary_user_lane_keeps_failed_event_at_cursor_without_queued_retry(
+) -> Result<(), DynError> {
+    use nexus_common::models::user::UserHsCursor;
+    super::utils::setup_primary_disposable().await?;
+    let (_, homeserver) = create_homeserver().await?;
+    let hs_id = homeserver.id.to_string();
+    let user_id = create_user_on_homeserver(&homeserver).await?;
+    UserHsCursor::init(&user_id, &hs_id).await?;
+    let source = Arc::new(MockKeyBasedEventSource::default().with_events(vec![vec![
+        stream_event(9, &user_id, "/pub/pubky.app/profile.json")?,
+        stream_event(10, &user_id, "/pub/pubky.app/posts/003286NSMY490")?,
+    ]]));
+    let failure = EventProcessorError::Generic("transient failure".into());
+    assert!(!failure.should_not_retry_now());
+    assert!(RetryScheduler::should_enqueue_related_event(&failure));
+    let handler = create_mock_handler(Err(failure), None);
+    let mut processor = processor(homeserver, handler.clone(), source);
+    let store = new_in_memory_store();
+    let inner = Arc::get_mut(&mut processor).unwrap();
+    inner.primary_user_indexing = true;
+    inner.retry_scheduler = Arc::new(RetryScheduler::new(
+        store.clone(),
+        InitialBackoff {
+            missing_dep_ms: 60_000,
+            transient_ms: 10_000,
+        },
+    ));
+    // User-level failures can leave the HS run successful; the cursor, effects and queue prove ordering.
+    let _ = processor.run().await;
+    assert_eq!(
+        handler.get_handle_count(),
+        1,
+        "later event must not overtake failed event"
+    );
+    assert_eq!(user_cursor(&user_id, &hs_id).await?, Some(0));
+    assert!(
+        store.fetch_ready(i64::MAX, None).await?.is_empty(),
+        "primary retries belong to the ordered stream"
+    );
+    Ok(())
 }

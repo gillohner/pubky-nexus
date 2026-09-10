@@ -2,6 +2,9 @@ use const_format::concatcp;
 
 // Version routes
 const VERSION_ROUTE: &str = "/v0";
+pub const POST_PROJECTION_HEAD_ROUTE: &str = "/v0/projection/posts/head";
+pub const POST_PROJECTION_INVENTORY_ROUTE: &str = "/v0/projection/posts/inventory";
+pub const POST_PROJECTION_CHANGES_ROUTE: &str = "/v0/projection/posts/changes";
 
 // Info routes
 pub const INFO_ROUTE: &str = concatcp!(VERSION_ROUTE, "/info");

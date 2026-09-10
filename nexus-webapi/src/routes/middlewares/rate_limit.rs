@@ -172,6 +172,29 @@ where
     )
 }
 
+/// Independent private replication bucket. Peer IP is used even behind a forwarded-header proxy.
+/// The caller must put authentication outside this layer so unauthenticated traffic cannot consume it.
+pub fn apply_rate_limit_projection<S>(
+    router: axum::Router<S>,
+    config: &RateLimitConfig,
+    shutdown_rx: Receiver<bool>,
+) -> axum::Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    if !config.enabled {
+        return router;
+    }
+    apply_rate_limit_bucket(
+        router,
+        config.projection_bucket.rate,
+        config.projection_bucket.burst,
+        "projection",
+        false,
+        shutdown_rx,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

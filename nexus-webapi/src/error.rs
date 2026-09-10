@@ -32,6 +32,8 @@ pub enum Error {
     ResourceNotFound { resource_id: String },
     #[error("Forbidden: {message}")]
     Forbidden { message: String },
+    #[error("Projection reset required: {message}")]
+    ProjectionResetRequired { message: String },
     // Add other custom errors here
 }
 
@@ -133,6 +135,7 @@ impl IntoResponse for Error {
             Error::TagNotFound { .. } => StatusCode::NOT_FOUND,
             Error::ResourceNotFound { .. } => StatusCode::NOT_FOUND,
             Error::Forbidden { .. } => StatusCode::FORBIDDEN,
+            Error::ProjectionResetRequired { .. } => StatusCode::GONE,
             // Map other errors to appropriate status codes
         };
 
@@ -161,6 +164,9 @@ impl IntoResponse for Error {
             }
             Error::Forbidden { message } => {
                 warn!("Forbidden: {}", message)
+            }
+            Error::ProjectionResetRequired { message } => {
+                debug!("Projection reset required: {}", message)
             }
             Error::InternalServerError { source } => error!("Internal server error: {:?}", source),
         };

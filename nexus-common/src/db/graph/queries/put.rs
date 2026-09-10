@@ -1,6 +1,7 @@
 use crate::db::graph::error::{GraphError, GraphResult};
 use crate::db::graph::Query;
 use crate::models::post::PostRelationships;
+use crate::models::post_projection::mutation::{prune_history, BEGIN_MUTATION, RECORD_PUT};
 use crate::models::{file::FileDetails, post::PostDetails, user::UserDetails};
 use crate::universal_tag::normalize::{normalize_uri, resource_id};
 use pubky_app_specs::{ParsedUri, Resource};
@@ -35,7 +36,7 @@ pub fn create_post(
     post: &PostDetails,
     post_relationships: &PostRelationships,
 ) -> GraphResult<Query> {
-    let mut cypher = String::new();
+    let mut cypher = String::from(BEGIN_MUTATION);
     let mut new_relationships = Vec::new();
 
     // Check if all the dependencies are consistent in the graph
@@ -83,7 +84,6 @@ pub fn create_post(
         }
         CALL {
             WITH new_post
-            WITH new_post WHERE $opaque_content
             OPTIONAL MATCH (new_post)-[mention:MENTIONED]->(:User)
             DELETE mention
         }
@@ -101,7 +101,7 @@ pub fn create_post(
             new_post.lock = $lock,
             new_post.parent = $parent,
             new_post.embed = $embed
-        WITH new_post, existing_post
+        WITH new_post, existing_post, checkpoint
         CALL {
             WITH new_post
             WITH new_post WHERE $parent_resource_id IS NOT NULL
@@ -116,8 +116,11 @@ pub fn create_post(
             ON CREATE SET r.uri = $embed_resource_uri, r.scheme = $embed_resource_scheme, r.indexed_at = $indexed_at
             MERGE (new_post)-[:EMBEDS {app: 'pubky.app'}]->(r)
         }
-        RETURN existing_post IS NOT NULL AS flag",
+        ",
     );
+    cypher.push_str(RECORD_PUT);
+    cypher.push_str(&prune_history());
+    cypher.push_str("RETURN existing_post IS NOT NULL AS flag");
 
     let parent_resource = post
         .parent
@@ -136,10 +139,11 @@ pub fn create_post(
     let mut cypher_query = Query::new("create_post", &cypher)
         .param("author_id", post.author.to_string())
         .param("post_id", post.id.to_string())
+        .param("source_uri", post.uri.clone())
+        .param("source_parent", post.parent.clone())
         .param("content", post.content.to_string())
         .param("indexed_at", post.indexed_at)
         .param("kind", post.kind.as_str())
-        .param("opaque_content", post.kind.known().is_none())
         .param("attachments", post.attachments.clone().unwrap_or_default())
         // Pass Option directly so None clears the property; "" would read back as Some("").
         .param("lock", post.lock.clone())

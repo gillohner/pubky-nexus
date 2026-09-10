@@ -9,6 +9,7 @@ pub mod file;
 pub mod info;
 pub mod notification;
 pub mod post;
+pub mod post_projection;
 pub mod resource;
 pub mod search;
 pub mod stream;
@@ -77,6 +78,7 @@ impl ApiDoc {
         combined.merge(resource::ResourceApiDoc::openapi());
         combined.merge(notification::NotificationApiDoc::merge_docs());
         combined.merge(events::EventsApiDoc::openapi());
+        combined.merge(post_projection::PostProjectionApiDoc::openapi());
         combined.merge(ApiDoc::openapi());
 
         combined

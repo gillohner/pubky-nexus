@@ -118,6 +118,8 @@ async fn existing_endpoints_return_and_filter_custom_posts() -> Result<()> {
     for id in ids {
         exec_single_row(queries::del::delete_post(&author, &id)).await?;
     }
+    // Global ranking fixtures share this graph. Leaving the random author behind
+    // changes the top-100 cutoff for tied scores in timeframe queries.
     UserDetails::delete(author.as_ref()).await?;
     Ok(())
 }

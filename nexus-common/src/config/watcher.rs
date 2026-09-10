@@ -111,7 +111,12 @@ pub struct WatcherConfig {
     )]
     pub key_based_events_limit: u16,
 
-    /// Maximum number of monitored homeservers
+    /// Index explicitly tracked primary-HS users through their ordered per-user streams.
+    /// Keep enabled until global history catches up before changing this routing policy.
+    #[serde(default)]
+    pub primary_user_indexing: bool,
+
+    /// Maximum number of monitored external homeservers (excludes the optional primary target).
     pub monitored_homeservers_limit: usize,
 
     /// Scheduling interval (ms) at which the primary-HS monitoring task is triggered.
@@ -189,6 +194,7 @@ impl Default for WatcherConfig {
             events_limit: DEFAULT_EVENTS_LIMIT,
             key_based_events_limit: DEFAULT_KEY_BASED_EVENTS_LIMIT,
             monitored_homeservers_limit: DEFAULT_MONITORED_HOMESERVERS_LIMIT,
+            primary_user_indexing: false,
             primary_hs_monitoring_interval_ms: DEFAULT_PRIMARY_HS_MONITORING_INTERVAL_MS,
             external_hs_monitoring_interval_ms: DEFAULT_EXTERNAL_HS_MONITORING_INTERVAL_MS,
             hs_resolver_interval_ms: DEFAULT_HS_RESOLVER_INTERVAL_MS,

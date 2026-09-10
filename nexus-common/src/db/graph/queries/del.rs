@@ -1,4 +1,7 @@
 use crate::db::graph::Query;
+use crate::models::post_projection::mutation::{
+    prune_history, BEGIN_MUTATION, LOCK_CHECKPOINT, RECORD_DELETE,
+};
 
 /// Deletes a user node and all its relationships
 /// # Arguments
@@ -6,8 +9,12 @@ use crate::db::graph::Query;
 pub fn delete_user(user_id: &str) -> Query {
     Query::new(
         "delete_user",
-        "MATCH (u:User {id: $id})
-         DETACH DELETE u;",
+        format!(
+            "{LOCK_CHECKPOINT}
+         MATCH (u:User {{id: $id}})
+         WHERE NOT EXISTS {{ (u)-[:AUTHORED]->(:Post) }}
+         DETACH DELETE u;"
+        ),
     )
     .param("id", user_id.to_string())
 }
@@ -17,18 +24,22 @@ pub fn delete_user(user_id: &str) -> Query {
 /// * `author_id` - The unique identifier of the user who authored the post.
 /// * `post_id` - The unique identifier of the post to be deleted.
 pub fn delete_post(author_id: &str, post_id: &str) -> Query {
-    Query::new(
-        "delete_post",
-        "MATCH (u:User {id: $author_id})-[:AUTHORED]->(p:Post {id: $post_id})
+    let cypher = format!(
+        "{BEGIN_MUTATION}
+         MATCH (u:User {{id: $author_id}})-[:AUTHORED]->(p:Post {{id: $post_id}})
          OPTIONAL MATCH (p)-[:EMBEDS|REPLIED]->(resource:Resource)
-         WITH p, collect(resource) AS resources
+         WITH checkpoint, p, collect(resource) AS resources
+         {RECORD_DELETE}
          DETACH DELETE p
+         {}
          WITH resources UNWIND resources AS resource
-         WITH resource WHERE NOT EXISTS { (resource)--() }
+         WITH resource WHERE NOT EXISTS {{ (resource)--() }}
          DELETE resource;",
-    )
-    .param("author_id", author_id.to_string())
-    .param("post_id", post_id.to_string())
+        prune_history()
+    );
+    Query::new("delete_post", cypher)
+        .param("author_id", author_id.to_string())
+        .param("post_id", post_id.to_string())
 }
 
 /// Deletes a "follows" relationship between two users

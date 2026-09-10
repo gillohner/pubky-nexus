@@ -105,6 +105,8 @@ impl WatcherTest {
         ));
 
         HsEventProcessorRunner {
+            backoff: Default::default(),
+            primary_user_indexing: false,
             limit: 1000,
             event_handler,
             shutdown_rx,
@@ -116,7 +118,7 @@ impl WatcherTest {
     /// Sets up the test environment for the watcher.
     ///
     /// This function performs the following steps:
-    /// 1. Reads configuration from environment variables.
+    /// 1. Uses the default local database configuration.
     /// 2. Initializes database connectors for Neo4j and Redis.
     /// 3. Sets up the global DHT test network for the watcher (ephemeral testnet).
     /// 4. Creates and starts a test homeserver instance with a random public key.
@@ -127,7 +129,13 @@ impl WatcherTest {
     /// Returns an instance of `Self` containing the configuration, homeserver,
     /// event processor, and other test setup details, including the shutdown receiver.
     pub async fn setup(max_file_size: Option<u64>) -> Result<Self> {
-        if let Err(e) = StackManager::setup(&StackConfig::default()).await {
+        Self::setup_with_stack(max_file_size, StackConfig::default()).await
+    }
+
+    /// Starts the real local homeserver pipeline with explicit database and file
+    /// configuration, allowing acceptance tests to use isolated service ports.
+    pub async fn setup_with_stack(max_file_size: Option<u64>, stack: StackConfig) -> Result<Self> {
+        if let Err(e) = StackManager::setup(&stack).await {
             return Err(Error::msg(format!("could not initialise the stack, {e:?}")));
         }
 

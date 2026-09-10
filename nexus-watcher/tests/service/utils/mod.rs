@@ -12,4 +12,4 @@ pub use processor::{
 };
 pub use processor_runner::MockEventProcessorRunner;
 pub use result::MockEventProcessorResult;
-pub use setup::{setup, HS_IDS};
+pub use setup::{setup, setup_primary_disposable, HS_IDS};
