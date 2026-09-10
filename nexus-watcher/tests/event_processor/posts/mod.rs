@@ -4,6 +4,7 @@ mod del_reply_notification;
 mod del_reply_parent_notification;
 mod forwards_compat;
 
+mod custom_kind_acceptance;
 mod del_bookmarked_notification;
 mod del_collection_notification;
 mod del_repost_notification;
@@ -19,7 +20,6 @@ mod edit_reply_parent_notification;
 mod edit_reposted_notification;
 mod edit_tagged_notification;
 mod engagement;
-mod eventky_acceptance;
 mod fail_reply;
 mod fail_repost;
 mod fail_user;

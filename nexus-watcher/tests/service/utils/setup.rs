@@ -22,8 +22,8 @@ pub async fn setup() -> Result<Vec<MockEventProcessor>> {
 
 /// Refuse default/shared stores for opt-in primary ownership integration tests.
 pub async fn setup_primary_disposable() -> Result<()> {
-    let neo4j = std::env::var("NEXUS_PRIMARY_TEST_NEO4J_URI")?;
-    let redis = std::env::var("NEXUS_PRIMARY_TEST_REDIS_URI")?;
+    let neo4j = std::env::var("NEXUS_TEST_NEO4J_URI")?;
+    let redis = std::env::var("NEXUS_TEST_REDIS_URI")?;
     anyhow::ensure!(
         neo4j == "bolt://127.0.0.1:17687",
         "requires disposable Neo4j tunnel"

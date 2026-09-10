@@ -112,16 +112,16 @@ cargo test -p nexus-watcher --lib post::mentions
 cargo clippy -p nexus-common -p nexus-watcher -p nexus-webapi --lib -- -D warnings
 ```
 
-For the ignored watcher integration test, supply disposable-service addresses in `EVENTKY_TEST_NEO4J_URI` and `EVENTKY_TEST_REDIS_URI`, then run `cargo test -p nexus-watcher --lib current_kind_mentions_reconcile_and_retry_without_timestamp_changes -- --ignored`. The test creates random fixtures and does not clear an existing graph.
+For the ignored watcher integration test, supply disposable-service addresses in `NEXUS_TEST_NEO4J_URI` and `NEXUS_TEST_REDIS_URI`, then run `cargo test -p nexus-watcher --lib current_kind_mentions_reconcile_and_retry_without_timestamp_changes -- --ignored`. The test creates random fixtures and does not clear an existing graph.
 
 The real homeserver acceptance fixture additionally starts a local Pubky DHT, relay and homeserver and sends raw `event`/`calendar` envelopes through homeserver storage and the watcher. It checks native comments, tags, reposts, bookmarks, exact kind/content in graph and cache, kind-only and content edits, removals, and immutable source history. It uses explicit `WatcherTest::setup_with_stack` configuration and does not clear other graph data.
 
-Provide dedicated Neo4j/Redis services and PostgreSQL with permission to create temporary databases. Set `EVENTKY_TEST_NEO4J_URI`, `EVENTKY_TEST_REDIS_URI`, and `TEST_PUBKY_CONNECTION_STRING`; the PostgreSQL URL must include `?pubky-test=true` (or the equivalent additional query parameter) to select an ephemeral database. Local TCP/UDP binds are required. Then run:
+Provide dedicated Neo4j/Redis services and PostgreSQL with permission to create temporary databases. Set `NEXUS_TEST_NEO4J_URI`, `NEXUS_TEST_REDIS_URI`, and `TEST_PUBKY_CONNECTION_STRING`; the PostgreSQL URL must include `?pubky-test=true` (or the equivalent additional query parameter) to select an ephemeral database. Local TCP/UDP binds are required. Then run:
 
 ```sh
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
   cargo test -p nexus-watcher --test mod \
-  event_processor::posts::eventky_acceptance::event_and_calendar_homeserver_social_lifecycle \
+  event_processor::posts::custom_kind_acceptance::event_and_calendar_homeserver_social_lifecycle \
   -- --exact --ignored --test-threads=1
 ```
 

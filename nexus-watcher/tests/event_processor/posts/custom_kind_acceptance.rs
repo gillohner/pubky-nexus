@@ -47,8 +47,8 @@ async fn event_and_calendar_homeserver_social_lifecycle() -> Result<()> {
     let stack = isolated_stack(files.path())?;
     let mut test = WatcherTest::setup_with_stack(None, stack).await?;
     setup_graph().await?;
-    let owner = actor(&mut test, "Eventky owner").await?;
-    let reader = actor(&mut test, "Eventky reader").await?;
+    let owner = actor(&mut test, "Custom kind owner").await?;
+    let reader = actor(&mut test, "Custom kind reader").await?;
     let before = projection::head().await?;
     let calendar = source(&owner, "calendar", calendar_content(&reader.id))?;
     let event = source(&owner, "event", event_content(&calendar.uri))?;
@@ -99,8 +99,8 @@ fn isolated_stack(files: &std::path::Path) -> Result<StackConfig> {
         files_path: files.to_path_buf(),
         ..Default::default()
     };
-    stack.db.neo4j.uri = std::env::var("EVENTKY_TEST_NEO4J_URI")?;
-    stack.db.redis = std::env::var("EVENTKY_TEST_REDIS_URI")?;
+    stack.db.neo4j.uri = std::env::var("NEXUS_TEST_NEO4J_URI")?;
+    stack.db.redis = std::env::var("NEXUS_TEST_REDIS_URI")?;
     Ok(stack)
 }
 
@@ -138,7 +138,7 @@ fn envelope(post: &SourcePost) -> Value {
 
 fn calendar_content(contributor: &str) -> Value {
     json!({
-        "schema":"eventky.calendar", "schema_version":1,
+        "schema":"example.calendar", "schema_version":1,
         "uid":"urn:uuid:63a59806-5bf0-44f0-bf26-041f1d5a4a95",
         "name":"Pubky builders", "timezone":"Europe/Zurich", "color":"#6757E8",
         "contributors":[contributor], "created":"2026-09-08T09:00:00Z",
@@ -149,7 +149,7 @@ fn calendar_content(contributor: &str) -> Value {
 
 fn event_content(calendar_uri: &str) -> Value {
     json!({
-        "schema":"eventky.event", "schema_version":1,
+        "schema":"example.event", "schema_version":1,
         "uid":"urn:uuid:84194bcd-17a2-43ae-99b9-2212e8b791c8",
         "summary":"Pubky builders meetup", "description":"Native comments and tags.",
         "dtstart":{"type":"zoned","value":"2026-10-01T18:00:00","tzid":"Europe/Zurich"},
@@ -187,7 +187,7 @@ async fn interact(
     test.put(&reader.key, &repost.path, repost_wire).await?;
     let tag = PubkyAppTag {
         uri: post.uri.clone(),
-        label: "native-eventky".into(),
+        label: "custom-kind".into(),
         created_at: chrono::Utc::now().timestamp_millis(),
     };
     let bookmark = PubkyAppBookmark {
@@ -315,7 +315,7 @@ async fn assert_counts(owner: &str, id: &str, expected: u32) -> Result<()> {
 }
 
 async fn assert_tags(owner: &str, reader: &str, id: &str) -> Result<()> {
-    let graph = find_post_tag(owner, id, "native-eventky")
+    let graph = find_post_tag(owner, id, "custom-kind")
         .await?
         .context("native graph tag")?;
     let cached = TagPost::get_from_index(owner, Some(id), None, None, None, None, false)
@@ -323,7 +323,7 @@ async fn assert_tags(owner: &str, reader: &str, id: &str) -> Result<()> {
         .context("native cached tags")?;
     assert_eq!(cached.len(), 1);
     for tag in [graph, cached[0].clone()] {
-        assert_eq!(tag.label, "native-eventky");
+        assert_eq!(tag.label, "custom-kind");
         assert_eq!(tag.taggers, vec![reader.to_owned()]);
     }
     Ok(())

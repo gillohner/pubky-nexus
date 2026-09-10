@@ -87,7 +87,7 @@ async fn history(user: &PubkyId) -> Result<Vec<(String, i64)>, DynError> {
 /// Run only against explicitly supplied disposable services. This test adds
 /// random fixtures, never clears graph state or rotates the shared epoch.
 #[tokio::test]
-#[ignore = "requires EVENTKY_TEST_NEO4J_URI and EVENTKY_TEST_REDIS_URI"]
+#[ignore = "requires NEXUS_TEST_NEO4J_URI and NEXUS_TEST_REDIS_URI"]
 async fn current_kind_mentions_reconcile_and_retry_without_timestamp_changes(
 ) -> Result<(), DynError> {
     let files = tempfile::tempdir()?;
@@ -95,8 +95,8 @@ async fn current_kind_mentions_reconcile_and_retry_without_timestamp_changes(
         files_path: files.path().to_path_buf(),
         ..Default::default()
     };
-    config.db.neo4j.uri = std::env::var("EVENTKY_TEST_NEO4J_URI")?;
-    config.db.redis = std::env::var("EVENTKY_TEST_REDIS_URI")?;
+    config.db.neo4j.uri = std::env::var("NEXUS_TEST_NEO4J_URI")?;
+    config.db.redis = std::env::var("NEXUS_TEST_REDIS_URI")?;
     StackManager::setup(&config).await?;
     let author = author().await?;
     let first = self::author().await?;
