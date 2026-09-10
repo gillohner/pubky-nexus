@@ -134,8 +134,9 @@ pub fn app_routes(
         shutdown_rx,
     );
 
-    // Merge both buckets (each carries its own rate limit layer).
-    expensive.merge(default).merge(projection)
+    // Merge all buckets (each carries its own rate limit layer). The default bucket is merged
+    // last so its 404 fallback remains the application fallback.
+    projection.merge(expensive).merge(default)
 }
 
 /// Builds the full application [Router]: attaches `routes` to `state`, then layers on

@@ -136,7 +136,8 @@ fn protect_routes<S: Clone + Send + Sync + 'static>(
 ) -> Router<S> {
     crate::routes::middlewares::rate_limit::apply_rate_limit_projection(router, config, shutdown_rx)
         // Last layer is outermost: reject unauthorized requests before charging the private quota.
-        .layer(middleware::from_fn_with_state(token, authorize))
+        // `route_layer` keeps the check off the 404 fallback, so unknown paths stay 404 after merging.
+        .route_layer(middleware::from_fn_with_state(token, authorize))
 }
 
 async fn authorize(
@@ -289,6 +290,26 @@ mod tests {
         assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(limited.headers().contains_key("retry-after"));
         drop(shutdown);
+    }
+
+    #[tokio::test]
+    async fn unknown_paths_fall_through_to_not_found_not_forbidden() {
+        let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+        let config = nexus_common::RateLimitConfig::default();
+        let private = Router::new().route(POST_PROJECTION_HEAD_ROUTE, get(|| async { "head" }));
+        let token: Arc<str> = Arc::from("private-projection-test-token-with-32-characters");
+        let public = Router::new().route("/public", get(|| async { "public" }));
+        let app = public.merge(protect_routes(private, Some(token), &config, receiver));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v0/search/users/by_name")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
