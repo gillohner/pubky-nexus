@@ -11,14 +11,22 @@ accepts, or add indexing of external post parents/embeds.
 {"lines":[{"op":"put","resource_id":"19f876713c227a568d939946496a0d30","uri":"https://example.com/","kind":"tag","author":"<pk>","label":"example","object_path":"/pub/example.app/tags/<id>","at":1792071211000}],"next_cursor":1}
 ```
 
-`object_path` preserves the writing object's actual app namespace. Key references
-by **(author, object_path)**: a put replaces the reference at that key, a del removes
-it. Delivery is at least once. A replayed put may repeat a line; a consumer must
-upsert rather than increment a counter for every line. Pending deletes retain their
-metadata until the graph deletion succeeds and publication is acknowledged, so a
-retry after the edge is gone can still publish the del. Publication and pending
-record removal are atomic. A later accepted put supersedes an unfinished delete
-for its path.
+## Delivery contract
+
+Lines are delivered **at least once, in append order**. A consumer must apply `put`
+as an upsert keyed by **(author, object_path)** and `del` as a delete by the same key.
+Duplicates are expected after retries and must be harmless: a repeated put replaces
+the same reference, and deleting an absent key is a no-op. Do not increment a
+counter for every line. `object_path` preserves the writing object's actual app
+namespace.
+
+The graph commit precedes the feed append. If the handler crashes between them,
+a retry on the existing edge appends the missing put with its original indexed
+timestamp. Retrying again after a successful append can emit an identical put;
+the consumer's upsert leaves one reference. Pending deletes retain their metadata
+until the graph deletion succeeds and publication is acknowledged, so a retry after
+the edge is gone can still publish the del. Publication and pending record removal
+are atomic. A later accepted put supersedes an unfinished delete for its path.
 
 `at` is the edge's indexed timestamp in Unix milliseconds for puts (including
 replays), and the deletion's indexed timestamp for dels. Apply lines in list order,
@@ -94,6 +102,6 @@ maintenance or profile-deletion cascades. Rebuilding reconciles current graph st
 (1–100 entries) and optional `viewer_id`. URI entries are at most 2048 bytes and use
 `pubky-resource-id` normalization and hashing. Results are the usual resource views,
 in request order, retaining duplicates and skipping unknown entries. Each entry
-includes `details.id`. Invalid inputs return 400; no matches returns 404. No remote
-fetch or resource creation occurs. Use this with the feed to hydrate referenced IDs
-without a request per resource.
+includes `details.id`. Invalid inputs return 400; no matches returns 200 with an
+empty array. No remote fetch or resource creation occurs. Use this with the feed
+to hydrate referenced IDs without a request per resource.
