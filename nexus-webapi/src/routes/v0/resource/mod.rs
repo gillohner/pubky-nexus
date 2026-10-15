@@ -14,7 +14,7 @@ use nexus_common::models::resource::tag::TagResource;
 use nexus_common::models::resource::ResourceDetails;
 use nexus_common::models::tag::traits::{TagCollection, TaggersCollection};
 use nexus_common::models::tag::TagDetails;
-use nexus_common::universal_tag::normalize::{normalize_uri, resource_id};
+use pubky_resource_id::{normalize_uri, resource_id};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 use utoipa::{OpenApi, ToSchema};

@@ -12,10 +12,9 @@ use nexus_common::models::tag::traits::{TagCollection, TaggersCollection};
 use nexus_common::models::tag::user::TagUser;
 use nexus_common::models::user::{UserCounts, UserIngestor, UsersByTagSearch};
 use nexus_common::types::Pagination;
-use nexus_common::universal_tag::normalize::{
-    classify_uri, normalize_uri, resource_id, UriCategory,
-};
+use nexus_common::universal_tag::normalize::{classify_uri, UriCategory};
 use pubky_app_specs::{ExtendedParsedUri, ParsedUri, PubkyAppTag, PubkyId, Resource};
+use pubky_resource_id::{normalize_uri, resource_id};
 use tracing::debug;
 
 use super::utils::{fail_on_blacklisted_hs, post_kind, post_relationships_is_reply};

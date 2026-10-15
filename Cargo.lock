@@ -3056,6 +3056,7 @@ dependencies = [
  "opentelemetry_sdk 0.33.0",
  "pubky",
  "pubky-app-specs",
+ "pubky-resource-id",
  "redis",
  "serde",
  "serde_json",
@@ -3101,6 +3102,7 @@ dependencies = [
  "opentelemetry_sdk 0.33.0",
  "pubky",
  "pubky-app-specs",
+ "pubky-resource-id",
  "pubky-testnet",
  "rand 0.10.3",
  "reqwest 0.13.5",
@@ -3136,6 +3138,7 @@ dependencies = [
  "opentelemetry_sdk 0.33.0",
  "pubky",
  "pubky-app-specs",
+ "pubky-resource-id",
  "pubky-testnet",
  "serde",
  "serde_json",
@@ -4147,6 +4150,14 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "pubky-resource-id"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "url",
 ]
 
 [[package]]
