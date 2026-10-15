@@ -331,14 +331,14 @@ async fn test_batch_resources_preserves_order_and_skips_unknown() -> Result<()> 
 
 #[tokio_shared_rt::test(shared)]
 async fn test_batch_resources_bad_requests_and_no_matches() -> Result<()> {
-    use crate::utils::invalid_post_request;
+    use crate::utils::{invalid_post_request, post_request};
     use serde_json::json;
     let path = format!("{ROOT_PATH}/by_ids");
     for body in [
         json!({"resource_ids": ["00000000000000000000000000000000"]}),
         json!({"uris": ["https://example.com/unknown-batch"]}),
     ] {
-        invalid_post_request(&path, body, StatusCode::NOT_FOUND).await?;
+        assert_eq!(post_request(&path, body).await?, json!([]));
     }
     for body in [
         json!({"resource_ids": []}),

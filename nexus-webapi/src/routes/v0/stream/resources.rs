@@ -193,9 +193,8 @@ impl ResourceStreamByIdsRequest {
     description = "Load 1–100 resources by resource_ids or uris (exactly one list). URIs are normalized and hashed with pubky-resource-id. Results follow request order, including duplicates; unknown resources are skipped. Each view carries details.id. viewer_id enables viewer-specific tag relationships. No resource is fetched or created by this lookup.",
     request_body = ResourceStreamByIdsRequest,
     responses(
-        (status = 200, description = "Resource views in request order", body = ResourceStream),
+        (status = 200, description = "Resource views in request order; an empty array when nothing matches", body = ResourceStream),
         (status = 400, description = "Invalid body, ID, URI, viewer, or list length"),
-        (status = 404, description = "None of the requested resources exist"),
         (status = 429, description = "Rate limit exceeded", headers(("Retry-After" = u64, description = "Seconds until retry"))),
         (status = 500, description = "Internal server error")
     )
@@ -206,7 +205,7 @@ pub async fn stream_resources_by_ids_handler(
     let (ids, viewer_id) = request.into_ids()?;
     let stream = ResourceStream::from_listed_resource_ids(viewer_id.as_deref(), &ids)
         .await?
-        .ok_or_else(|| Error::resource_not_found("requested resources"))?;
+        .unwrap_or_default();
     Ok(Json(stream))
 }
 
