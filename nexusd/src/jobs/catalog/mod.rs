@@ -1,6 +1,8 @@
 //! Concrete jobs the daemon can register. The engine does not depend on these types.
 
 mod hot_tags;
+mod resource_changes_seed;
+use resource_changes_seed::ResourceChangesSeedJob;
 mod influencers;
 mod trust_recompute;
 
@@ -18,7 +20,7 @@ use nexus_common::{
 use super::{JobRegistry, LOCK_TTL_SECS};
 
 impl JobRegistry {
-    /// This daemon's jobs: one cache-refresh job per timeframe, plus trust-recompute.
+    /// This daemon's jobs: one cache-refresh job per timeframe, plus trust-recompute and resource-changes-seed.
     /// `trust_rank` configures only the latter.
     pub fn catalog(trust_rank: &TrustRankConfig) -> Self {
         Self::new(vec![
@@ -30,6 +32,7 @@ impl JobRegistry {
             Arc::new(HotTagsCacheJob::new(Timeframe::ThisMonth)),
             Arc::new(HotTagsCacheJob::new(Timeframe::AllTime)),
             Arc::new(TrustRecomputeJob::build(trust_rank, LOCK_TTL_SECS)),
+            Arc::new(ResourceChangesSeedJob),
         ])
     }
 }
@@ -41,7 +44,7 @@ mod tests {
     use nexus_common::TrustRankConfig;
 
     #[test]
-    fn catalog_names_are_the_eight_jobs() {
+    fn catalog_names_are_the_nine_jobs() {
         let mut names = JobRegistry::catalog(&TrustRankConfig::default()).job_names();
         names.sort_unstable();
         assert_eq!(
@@ -54,6 +57,7 @@ mod tests {
                 "influencers-cache-this-month",
                 "influencers-cache-this-week",
                 "influencers-cache-today",
+                "resource-changes-seed",
                 "trust-recompute",
             ]
         );
