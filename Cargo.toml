@@ -7,9 +7,11 @@ members = [
     "nexus-watcher",
     "nexusd",
     "examples",
+    "pubky-resource-id",
 ]
 
 [workspace.dependencies]
+pubky-resource-id = { version = "0.1.0", path = "pubky-resource-id" }
 anyhow = "1.0.103"
 blake3 = "1"
 hex = "0.4"

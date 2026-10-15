@@ -1,0 +1,12 @@
+[package]
+name = "pubky-resource-id"
+version = "0.1.0"
+edition = "2021"
+description = "Stable URI normalization and resource IDs for Pubky indexers"
+repository = "https://github.com/pubky/pubky-nexus"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+blake3 = { workspace = true }
+url = { workspace = true }
