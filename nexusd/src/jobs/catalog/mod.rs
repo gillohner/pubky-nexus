@@ -1,5 +1,7 @@
 //! Concrete jobs the daemon can register. The engine does not depend on these types.
 
+mod app_post_changes_seed;
+use app_post_changes_seed::AppPostChangesSeedJob;
 mod hot_tags;
 mod resource_changes_seed;
 use resource_changes_seed::ResourceChangesSeedJob;
@@ -35,6 +37,7 @@ impl JobRegistry {
             Arc::new(MostFollowedCacheJob),
             Arc::new(TrustRecomputeJob::build(trust_rank, LOCK_TTL_SECS)),
             Arc::new(ResourceChangesSeedJob),
+            Arc::new(AppPostChangesSeedJob),
         ])
     }
 }
@@ -46,12 +49,13 @@ mod tests {
     use nexus_common::TrustRankConfig;
 
     #[test]
-    fn catalog_names_are_the_eleven_jobs() {
+    fn catalog_names_are_the_twelve_jobs() {
         let mut names = JobRegistry::catalog(&TrustRankConfig::default()).job_names();
         names.sort_unstable();
         assert_eq!(
             names,
             [
+                "app-post-changes-seed",
                 "hot-tags-cache-all-time",
                 "hot-tags-cache-this-month",
                 "hot-tags-cache-this-week",

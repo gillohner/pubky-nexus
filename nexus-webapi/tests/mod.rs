@@ -15,3 +15,4 @@ pub mod user;
 pub mod utils;
 
 mod app_kinds;
+mod app_post_changes;

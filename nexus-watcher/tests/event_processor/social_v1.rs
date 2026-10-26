@@ -2,9 +2,7 @@ use super::posts::utils::test_user;
 use super::utils::watcher::{generate_post_id, retrieve_and_handle_event_line, WatcherTest};
 use anyhow::Result;
 use nexus_common::db::{fetch_row_from_graph, graph::Query};
-use nexus_common::models::event::resource_changes::{
-    ReferenceChange, ResourceChange, ResourceChangeOp,
-};
+use nexus_common::models::event::resource_changes::{ResourceChange, ResourceChangeOp};
 use nexus_common::models::post::PostDetails;
 use pubky::{Keypair, ResourcePath};
 use pubky_social_specs::{
@@ -94,7 +92,6 @@ async fn indexes_v1_versions_follows_collections_and_resource_tags() -> Result<(
     let own: Vec<_> = page
         .lines
         .into_iter()
-        .filter_map(ReferenceChange::into_resource)
         .filter(|line| line.author == author)
         .collect();
     assert_eq!(own.len(), 2);
@@ -106,8 +103,7 @@ async fn indexes_v1_versions_follows_collections_and_resource_tags() -> Result<(
     let (page, _, _) = ResourceChange::get_from_index(cursor, 1000).await?;
     assert_eq!(
         page.lines
-            .into_iter()
-            .filter_map(ReferenceChange::into_resource)
+            .iter()
             .filter(|line| line.author == author && line.op == ResourceChangeOp::Del)
             .count(),
         2

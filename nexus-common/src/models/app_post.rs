@@ -62,6 +62,25 @@ pub struct AppPostUri {
 }
 
 impl AppPostUri {
+    /// Social post addresses use the same version layout, but retain social routing.
+    pub fn parse_social(uri: &str) -> Option<Self> {
+        let parsed = ParsedUri::try_from(uri).ok()?;
+        if parsed.visibility != Visibility::Public || parsed.try_to_uri_str().ok()?.as_str() != uri
+        {
+            return None;
+        }
+        let Resource::Post { id, version, label } = parsed.resource else {
+            return None;
+        };
+        Some(Self {
+            author: parsed.user_id,
+            namespace: "social".into(),
+            id,
+            version,
+            label,
+        })
+    }
+
     pub fn parse(uri: &str) -> Option<Self> {
         let parsed = ParsedUri::try_from(uri).ok()?;
         if parsed.visibility != Visibility::Public || parsed.try_to_uri_str().ok()?.as_str() != uri
@@ -109,19 +128,18 @@ impl AppPostUri {
         format!("pubky://{}{}", self.author, self.path())
     }
     pub fn version_uri(&self) -> String {
+        format!("pubky://{}{}", self.author, self.version_path())
+    }
+    pub fn version_path(&self) -> String {
         match &self.version {
-            Some(version) => format!(
-                "pubky://{}{}",
-                self.author,
-                AppPostInput::version_path(
-                    &self.namespace,
-                    Root::Pub,
-                    &self.id,
-                    version,
-                    self.label.as_deref()
-                )
+            Some(version) => AppPostInput::version_path(
+                &self.namespace,
+                Root::Pub,
+                &self.id,
+                version,
+                self.label.as_deref(),
             ),
-            None => self.uri(),
+            None => self.path(),
         }
     }
 
@@ -353,7 +371,7 @@ mod tests {
     fn canonical_versions_share_a_logical_identity() {
         let plain = stored();
         let labelled =
-            AppPostUri::parse(&plain.version_uri().replace(".json", "-my-review.json")).unwrap();
+            AppPostUri::parse(&plain.version_uri().replace(".json", "-my-session.json")).unwrap();
         assert_eq!(plain.uri(), labelled.uri());
         assert_ne!(plain.version_uri(), labelled.version_uri());
         assert_eq!(AppPostUri::parse(&plain.uri()).unwrap().version, None);

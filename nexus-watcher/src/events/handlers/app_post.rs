@@ -1,8 +1,7 @@
 use crate::errors::EventProcessorError;
 use nexus_common::config::watcher::AppKindsConfig;
 use nexus_common::models::app_post::{is_post_reference, AppPost, AppPostInput, AppPostUri};
-use nexus_common::models::event::app_post_changes::AppPostChange;
-use nexus_common::models::event::resource_changes::ResourceChangeOp;
+use nexus_common::models::event::app_post_changes::{AppPostChange, AppPostChangeOp};
 use std::collections::BTreeMap;
 
 pub async fn put(
@@ -42,23 +41,21 @@ pub async fn sync_put(
         );
         return Err(EventProcessorError::missing_dependencies(dependencies));
     }
-    AppPostChange::from_post(post, ResourceChangeOp::Put)
-        .store(feed_only)
-        .await?;
+    AppPostChange::from_post(post).store().await?;
     Ok(())
 }
 
 pub async fn del(path: &AppPostUri) -> Result<(), EventProcessorError> {
     let uri = path.uri();
-    let line = match AppPost::get(&uri).await? {
-        Some(post) => Some(AppPostChange::from_post(post, ResourceChangeOp::Del)),
-        None => AppPostChange::feed_only(&uri).await?.map(|mut line| {
-            line.op = ResourceChangeOp::Del;
-            line
-        }),
-    };
-    if let Some(line) = line {
-        line.prepare_delete().await?;
+    AppPostChange::prepare_version_delete(path).await?;
+    // Graph fallback is only for the exact version known there (e.g. a crash
+    // before its first append). Never mislabel an old version with the head's kind.
+    if let Some(post) = AppPost::get(&uri).await? {
+        if post.version_uri == path.version_uri() {
+            AppPostChange::new(path, post.kind, AppPostChangeOp::Del)
+                .prepare_delete()
+                .await?;
+        }
     }
     AppPost::delete(&uri).await?;
     AppPostChange::finish_delete(path).await?;

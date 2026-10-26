@@ -2,7 +2,9 @@
 
 Nexus indexes public app posts at
 `/pub/<namespace>/v1/posts/{id}/{editId}[-{slug}].json`. `social` uses the social
-reader and `pubky.app` keeps its legacy route. App namespaces are 1–64 ASCII bytes,
+reader and `pubky.app` keeps its legacy route. App examples use `music`
+(`listen`, `listening`, `session`), `maps` (`route`), `events` (`availability`) and
+`marketplace`. The extension hook also accepts unconfigured namespaces. App namespaces are 1–64 ASCII bytes,
 start with a lowercase letter, and otherwise contain lowercase letters, digits,
 `.`, `_` or `-`. Kind tokens are 1–32 ASCII bytes, start with a lowercase letter,
 and otherwise contain lowercase letters, digits, `_` or `-`.
@@ -29,12 +31,13 @@ As for social v1 posts, each accepted version PUT updates the same logical node.
 The last processed event wins, even if an older edit is replayed after a newer one;
 Nexus does not compare edit IDs to an indexed head. The shared reader requires
 `editId >= id` and valid timestamp bounds. **DEL of any version deletes the entire
-logical app post and all its edges**; subsequent version DELs are no-ops. Deleting
+logical app post and all its edges**; subsequent version DELs are graph no-ops, but each accepted stored version still
+gets its own feed DEL. Deleting
 an old version is not history pruning. A later PUT can recreate the post.
 
 ## Durable and feed-only tiers
 
-Every valid app PUT emits a reference-feed line. Durable kinds also write graph
+Every valid app PUT emits an app-post feed line. Durable kinds also write graph
 metadata. Feed-only kinds write no graph node or Resource edges. `feed_only` is an
 indexing policy: the homeserver file remains available and Pinakes retains the data
 it indexes. Nexus does not impose an expiry or delete the source file.
@@ -52,9 +55,10 @@ Operator configuration copies the app spec's tier list. Config changes take effe
 on subsequent events; they do not scan or reclassify existing posts.
 
 A kind edit can move between tiers. Moving to feed-only removes a prior durable
-node and edges; moving to durable creates them. Redis retains only the latest
-feed-only line under `Event:ResourceChanges:FeedOnlyAppPosts`, keyed by logical URI,
-to support deletes and reseeding. No app content or extensions are cached there.
+node and edges; moving to durable creates them. Redis retains metadata for every accepted stored version under
+`Event:AppPostChanges:Versions` until that version is deleted. This covers both
+tiers and supports accurate version DELs and reseeding after the graph node is
+removed. No app content or extensions are cached there.
 
 ## Graph relationships and visibility
 
@@ -81,7 +85,7 @@ immutability still applies. No new app reply-count/list endpoint is provided.
 
 ```text
 GET /v0/stream/posts?namespace=music&kind=listen
-GET /v0/stream/posts?namespace=music&exclude_kinds=review,session
+GET /v0/stream/posts?namespace=music&exclude_kinds=listening,session
 GET /v0/stream/posts?namespace=music&source=author&author_id=<pk>
 ```
 
@@ -98,35 +102,64 @@ The metadata's `version_uri` is the source file to fetch. The response contains 
 content, extensions, attachments or lock payload. Feed-only posts have no stream
 entry.
 
-## Reference feed
+## App-post changes feed
 
-The existing `GET /v0/resources/changes` cursor, epoch and ordering apply to both
-Resource-tag and app-post lines. App lines contain exactly these five fields:
+`GET /v0/app-posts/changes?cursor=0&limit=500` reads the independent Redis list
+`Event:AppPostChanges`. App posts never enter `Event:ResourceChanges` or
+`GET /v0/resources/changes`; the resource feed retains the #1170 contract.
 
 ```json
-{"op":"put","author":"<pk>","path":"/pub/music/v1/posts/<id>","namespace":"music","kind":"listen"}
+{"op":"put","author":"<pk>","post":"/pub/music/v1/posts/0032SSN7Q4EVG","version":"/pub/music/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ.json","namespace":"music","post_kind":"listen","at":1792980000000}
 ```
 
-`path` is the **versionless logical path**, so all edits share the consumer key
-`(author, path)`. A consumer upserts on `put` and deletes that key on `del`. Delivery
-is **at least once, in append order**; duplicate puts after retries are expected
-and must be harmless. Resource-tag lines retain their `(author, object_path)`
-key. Discriminate the shapes by `namespace`/`path`, not by `kind`, whose app
-vocabulary is open. Feed-only consumers list the version directory to hydrate a
-logical reference; the five-field line does not carry an edit ID.
+`post` is the versionless identity path; the logical replay key is `(author, post)`.
+`version` is the exact stored file path, including a slug when present. Fetch
+`pubky://{author}{version}`; no directory listing is needed. `post_kind` is the
+namespace's vocabulary. `at` is the acceptance/deletion time in Unix milliseconds.
+No content, extension or temporal/venue payload is sent.
+
+Delivery is **at least once, in append order**. PUT upserts the referenced version
+within the logical post's version set; duplicate puts after retries must be
+harmless. On DEL with a non-null `version`, remove only that stored version.
+**`version: null` distinguishes a whole-post DEL**, which removes every version of
+the logical key. PUT always has a non-null version.
+
+The #1161/N3 graph policy remains: DEL of any stored version removes the logical
+node. The feed reports the actual storage event, so it does **not** infer that the
+other version files were deleted. N3 receives individual file DELs and does not
+synthesize whole-post DELs. A consumer maintaining source history can retain the
+remaining versions until their DELs arrive, independently of the graph policy.
+Repeated completed DELs are no-ops. DEL of a version never accepted here emits no
+line because its kind is unknown. Pending delete details are saved before graph
+removal; append, removal of the pending record and version metadata removal are
+atomic. A later PUT supersedes an unfinished DEL for that version.
 
 The graph write precedes append for durable posts. A crash after graph commit is
-recovered by retrying the upsert and appending the line; a retry after append may
-append the same put again. Pending delete metadata survives removal of the graph
-node, and delete publication/metadata removal is atomic. A DEL for an object never
-accepted here has no known kind and emits no line; repeated completed DELs are
-no-ops. A later put supersedes an unfinished delete for the same logical path.
+recovered by retrying the upsert and appending; retry after append may duplicate
+it. No cross-database transaction is claimed.
 
-Reseeding snapshots Resource-tag edges and durable app nodes, then current
-feed-only metadata, and atomically appends the old list's live suffix before
-publishing the new epoch. Consumers rebuild their state on an epoch change;
-snapshot/suffix duplicates are harmless upserts. Redis persistence is needed for
-feed-only metadata and pending deletes. After Redis loss, the graph can restore
-durable state but feed-only state requires replay/re-ingestion of source events.
-The feed records accepted events, not unrelated graph maintenance or profile
-cascades. See [Resource reference feed](resource-changes.md) for cursor handling.
+The response is `{ "lines": [...], "next_cursor": n }`. Cursor is a zero-based list
+offset; limit is 1–1000, default 500. Invalid bounds return 400; an empty or exhausted
+feed returns 200 with an empty array of lines and the requested cursor. Reads do
+not initialize keys or fetch resources. `x-events-length` and optional
+`x-events-epoch` come from the same atomic snapshot as the page. Persist cursor and
+epoch together. On epoch change or cursor beyond that response's length, rebuild
+local state from cursor 0. Retain the previous epoch when the header is absent.
+Each feed has its own cursor and epoch; never reuse one feed's cursor on the other.
+
+The `app-post-changes-seed` daemon job snapshots current version metadata and
+recovers durable app heads from the graph if their append did not complete. It
+then atomically appends the old list's live suffix and publishes a new epoch. A
+lease protects publication; interrupted seeds leave the old generation intact.
+Snapshot duplicates and concurrent suffix duplicates are harmless. Run the job
+after upgrading all writers, and whenever a snapshot rebuild is needed. It does
+not reseed or mutate the resource feed.
+
+Redis persistence is required for prior-version, feed-only and pending-delete
+metadata. After Redis loss, the graph can restore durable heads, but historical
+versions and feed-only objects require source replay/re-ingestion. The feed
+records accepted events, not unrelated graph maintenance or profile cascades.
+For an upgrade from a mixed-feed build, check for app lines in the old resource
+list, re-ingest app source versions, and run the two seed jobs separately. Do not
+copy the old five-field app lines: they lack a fetchable version. A resource
+reseed changes its epoch so strict consumers rebuild using resource-only lines.

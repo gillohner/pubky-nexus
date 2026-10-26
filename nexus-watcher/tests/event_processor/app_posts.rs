@@ -4,10 +4,7 @@ use anyhow::Result;
 use nexus_common::config::watcher::default_app_kinds;
 use nexus_common::db::{fetch_row_from_graph, graph::Query};
 use nexus_common::models::app_post::{AppPost, AppPostUri};
-use nexus_common::models::event::app_post_changes::AppPostChange;
-use nexus_common::models::event::resource_changes::{
-    ReferenceChange, ResourceChange, ResourceChangeOp,
-};
+use nexus_common::models::event::app_post_changes::{AppPostChange, AppPostChangeOp};
 use nexus_common::models::post::{PostDetails, PostRelationships};
 use nexus_watcher::errors::EventProcessorError;
 use nexus_watcher::events::handlers::app_post;
@@ -22,15 +19,12 @@ fn envelope(_id: &str, kind: &str) -> Value {
 async fn own_lines(author: &str, mut cursor: u64) -> Result<Vec<AppPostChange>> {
     let mut lines = Vec::new();
     loop {
-        let (page, _, _) = ResourceChange::get_from_index(cursor, 1000).await?;
+        let (page, _, _) = AppPostChange::get_from_index(cursor, 1000).await?;
         if page.lines.is_empty() {
             break;
         }
         cursor = page.next_cursor;
-        lines.extend(page.lines.into_iter().filter_map(|line| match line {
-            ReferenceChange::AppPost(line) if line.author == author => Some(line),
-            _ => None,
-        }));
+        lines.extend(page.lines.into_iter().filter(|line| line.author == author));
     }
     Ok(lines)
 }
@@ -47,18 +41,18 @@ async fn setup() -> Result<(WatcherTest, Keypair, String)> {
 #[tokio_shared_rt::test(shared)]
 async fn durable_put_edges_edit_and_del() -> Result<()> {
     let (mut test, key, author) = setup().await?;
-    let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
+    let (_, _, cursor) = AppPostChange::get_from_index(0, 0).await?;
     let id = generate_post_id();
     let path: ResourcePath = format!("/pub/music/v1/posts/{id}/{id}.json").parse()?;
     let version_uri = format!("pubky://{author}{path}");
     let uri = AppPostUri::parse(&version_uri).unwrap().uri();
-    let mut body = envelope(&id, "review");
+    let mut body = envelope(&id, "listen");
     body["parent"] = json!(format!("pubky://{author}/pub/album/catalog.json"));
     body["embed"] = json!("https://example.com/album");
     test.put(&key, &path, &body).await?;
     let post = AppPost::get(&uri).await?.expect("durable app post");
     assert_eq!(post.namespace, "music");
-    assert_eq!(post.kind, "review");
+    assert_eq!(post.kind, "listen");
     let row = fetch_row_from_graph(Query::new("test_app_edges", "MATCH (u:User)-[:AUTHORED]->(p:AppPost {uri: $uri}) RETURN u.id AS author, p.content IS NULL AND p.ext IS NULL AS opaque, COUNT { (p)-[:APP_REPLIED]->(:Resource) } AS parents, COUNT { (p)-[:APP_EMBEDDED]->(:Resource) } AS embeds").param("uri", uri.clone())).await?.unwrap();
     assert_eq!(row.get::<String>("author")?, author);
     assert!(row.get::<bool>("opaque")?);
@@ -68,7 +62,7 @@ async fn durable_put_edges_edit_and_del() -> Result<()> {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         serde_json::to_value(&lines[0])?,
-        json!({"op":"put", "author":author, "path":format!("/pub/music/v1/posts/{id}"), "namespace":"music", "kind":"review"})
+        json!({"op":"put", "author":author, "post":format!("/pub/music/v1/posts/{id}"), "version": path.to_string(), "namespace":"music", "post_kind":"listen", "at":lines[0].at})
     );
 
     body["parent"] = Value::Null;
@@ -76,7 +70,7 @@ async fn durable_put_edges_edit_and_del() -> Result<()> {
     body["kind"] = json!("session");
     let edit = generate_post_id();
     let edited_path: ResourcePath =
-        format!("/pub/music/v1/posts/{id}/{edit}-review.json").parse()?;
+        format!("/pub/music/v1/posts/{id}/{edit}-listen.json").parse()?;
     test.put(&key, &edited_path, &body).await?;
     assert_eq!(
         AppPost::get(&uri).await?.unwrap().version_uri,
@@ -88,11 +82,18 @@ async fn durable_put_edges_edit_and_del() -> Result<()> {
     assert!(AppPost::get(&uri).await?.is_none());
     let lines = own_lines(&author, cursor).await?;
     assert_eq!(lines.len(), 3);
-    assert_eq!(lines[2].op, ResourceChangeOp::Del);
-    assert_eq!(lines[2].kind, "session");
-    // Deleting any version removes the logical post; subsequent version DELs are no-ops.
+    assert_eq!(lines[2].op, AppPostChangeOp::Del);
+    assert_eq!(lines[2].post_kind, "listen");
+    assert_eq!(lines[2].version.as_deref(), Some(path.to_string().as_str()));
+    // N3 removes the node on the first DEL, but every stored version is reported.
     test.del(&key, &edited_path).await?;
-    assert_eq!(own_lines(&author, cursor).await?.len(), 3);
+    let lines = own_lines(&author, cursor).await?;
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[3].post_kind, "session");
+    assert_eq!(
+        lines[3].version.as_deref(),
+        Some(edited_path.to_string().as_str())
+    );
     test.cleanup_user(&key).await?;
     Ok(())
 }
@@ -100,30 +101,28 @@ async fn durable_put_edges_edit_and_del() -> Result<()> {
 #[tokio_shared_rt::test(shared)]
 async fn music_listening_is_feed_only_but_listen_history_is_durable() -> Result<()> {
     let (mut test, key, author) = setup().await?;
-    let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
+    let (_, _, cursor) = AppPostChange::get_from_index(0, 0).await?;
     for kind in ["listening", "listen"] {
         let id = generate_post_id();
         let path: ResourcePath = format!("/pub/music/v1/posts/{id}/{id}.json").parse()?;
         let uri = format!("pubky://{author}/pub/music/v1/posts/{id}");
         test.put(&key, &path, &envelope(&id, kind)).await?;
         assert_eq!(AppPost::get(&uri).await?.is_some(), kind == "listen");
-        assert_eq!(
-            AppPostChange::feed_only(&uri).await?.is_some(),
-            kind == "listening"
-        );
+        let parsed = AppPostUri::parse(&format!("pubky://{author}{path}")).unwrap();
+        assert!(AppPostChange::version_record(&parsed).await?.is_some());
         // Feed-only is an indexing tier, not a homeserver deletion or TTL.
         test.del(&key, &path).await?;
         assert!(AppPost::get(&uri).await?.is_none());
-        assert!(AppPostChange::feed_only(&uri).await?.is_none());
+        assert!(AppPostChange::version_record(&parsed).await?.is_none());
     }
     let lines = own_lines(&author, cursor).await?;
     assert_eq!(
         lines.iter().map(|l| l.op).collect::<Vec<_>>(),
         [
-            ResourceChangeOp::Put,
-            ResourceChangeOp::Del,
-            ResourceChangeOp::Put,
-            ResourceChangeOp::Del
+            AppPostChangeOp::Put,
+            AppPostChangeOp::Del,
+            AppPostChangeOp::Put,
+            AppPostChangeOp::Del
         ]
     );
     test.cleanup_user(&key).await?;
@@ -137,9 +136,9 @@ async fn unknown_namespace_is_durable_and_identity_includes_namespace() -> Resul
     let social_path: ResourcePath = format!("/pub/pubky.app/posts/{id}").parse()?;
     let social = short_post("social collision control");
     test.put(&key, &social_path, &social).await?;
-    for namespace in ["new.app", "music"] {
+    for namespace in ["new.app", "marketplace"] {
         let path: ResourcePath = format!("/pub/{namespace}/v1/posts/{id}/{id}.json").parse()?;
-        test.put(&key, &path, &envelope(&id, "review")).await?;
+        test.put(&key, &path, &envelope(&id, "listen")).await?;
         assert_eq!(
             AppPost::get(&format!("pubky://{author}/pub/{namespace}/v1/posts/{id}"))
                 .await?
@@ -152,7 +151,7 @@ async fn unknown_namespace_is_durable_and_identity_includes_namespace() -> Resul
         PostDetails::get_by_id(&author, &id).await?.unwrap().content,
         social.content
     );
-    for namespace in ["new.app", "music"] {
+    for namespace in ["new.app", "marketplace"] {
         test.del(
             &key,
             &format!("/pub/{namespace}/v1/posts/{id}/{id}.json").parse()?,
@@ -169,7 +168,7 @@ async fn unknown_namespace_is_durable_and_identity_includes_namespace() -> Resul
 async fn invalid_envelope_is_spec_validation_without_feed_or_node() -> Result<()> {
     let (test, key, author) = setup().await?;
     let mut test = test.remove_event_processing().await;
-    let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
+    let (_, _, cursor) = AppPostChange::get_from_index(0, 0).await?;
     let id = generate_post_id();
     let path: ResourcePath = format!("/pub/maps/v1/posts/{id}/{id}.json").parse()?;
     let version_uri = format!("pubky://{author}{path}");
@@ -347,7 +346,7 @@ async fn social_reply_to_app_post_and_app_parent_edges() -> Result<()> {
 #[tokio_shared_rt::test(shared)]
 async fn graph_commit_retry_and_pending_delete_recovery() -> Result<()> {
     let (mut test, key, author) = setup().await?;
-    let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
+    let (_, _, cursor) = AppPostChange::get_from_index(0, 0).await?;
     let id = generate_post_id();
     let path = AppPostUri::parse(&format!(
         "pubky://{author}/pub/music/v1/posts/{id}/{id}.json"
@@ -361,11 +360,14 @@ async fn graph_commit_retry_and_pending_delete_recovery() -> Result<()> {
     app_post::put(&path, &bytes, &default_app_kinds()).await?;
     let lines = own_lines(&author, cursor).await?;
     assert_eq!(lines.len(), 2);
-    assert_eq!(
-        lines[0], lines[1],
-        "retries produce harmless upserts of the same key"
+    assert_eq!(lines[0].post, lines[1].post);
+    assert_eq!(lines[0].version, lines[1].version);
+    assert_eq!(lines[0].post_kind, lines[1].post_kind);
+    assert!(
+        lines[1].at >= lines[0].at,
+        "retries upsert the same version key"
     );
-    AppPostChange::new(&path, "session".into(), ResourceChangeOp::Del)
+    AppPostChange::new(&path, "session".into(), AppPostChangeOp::Del)
         .prepare_delete()
         .await?;
     AppPost::delete(&path.uri()).await?; // crash boundary: pending metadata survives
@@ -373,7 +375,7 @@ async fn graph_commit_retry_and_pending_delete_recovery() -> Result<()> {
     app_post::del(&path).await?;
     let lines = own_lines(&author, cursor).await?;
     assert_eq!(lines.len(), 3);
-    assert_eq!(lines[2].op, ResourceChangeOp::Del);
+    assert_eq!(lines[2].op, AppPostChangeOp::Del);
     test.cleanup_user(&key).await?;
     Ok(())
 }
@@ -395,8 +397,11 @@ async fn kind_edits_and_operator_config_change_the_tier_without_stale_metadata()
             kind != "listening"
         );
         assert_eq!(
-            AppPostChange::feed_only(&path.uri()).await?.is_some(),
-            kind == "listening"
+            AppPostChange::version_record(&path)
+                .await?
+                .unwrap()
+                .post_kind,
+            kind
         );
     }
     let configured = std::collections::BTreeMap::from([(
@@ -412,9 +417,9 @@ async fn kind_edits_and_operator_config_change_the_tier_without_stale_metadata()
     )
     .await?;
     assert!(AppPost::get(&path.uri()).await?.is_none());
-    assert!(AppPostChange::feed_only(&path.uri()).await?.is_some());
+    assert!(AppPostChange::version_record(&path).await?.is_some());
     app_post::del(&path).await?;
-    assert!(AppPostChange::feed_only(&path.uri()).await?.is_none());
+    assert!(AppPostChange::version_record(&path).await?.is_none());
     test.cleanup_user(&key).await?;
     Ok(())
 }

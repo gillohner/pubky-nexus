@@ -1,11 +1,11 @@
 # Resource reference feed
 
 `GET /v0/resources/changes?cursor=0&limit=500` returns a JSON object with `lines` and
-`next_cursor`. It contains Resource-tag references and app-post references.
-Nexus does not fetch external targets. Resource-tag lines describe tags on generic
-Resources; Post and User tag targets keep their existing handlers and are excluded.
-[App-kind posts](app-kinds.md) add a separate five-field line shape, with namespace
-and logical post path, for both durable and feed-only app kinds.
+`next_cursor`. Each line describes an accepted reference to a generic Resource;
+Nexus does not fetch the target. The first implementation emits only tags handled
+by the universal-tag flow. Post and User targets continue through their existing
+handlers and are excluded. This does not broaden which tag paths or targets Nexus
+accepts, or add indexing of external post parents/embeds.
 
 ```json
 {"lines":[{"op":"put","resource_id":"19f876713c227a568d939946496a0d30","uri":"https://example.com/","kind":"tag","author":"<pk>","label":"example","object_path":"/pub/<folder>/tags/<id>","at":1792071211000}],"next_cursor":1}
@@ -20,8 +20,7 @@ open.
 ## Delivery contract
 
 Lines are delivered **at least once, in append order**. A consumer must apply `put`
-as an upsert keyed by **(author, object_path)** for Resource-tag lines or
-**(author, path)** for app-post lines, and `del` as a delete by the same key.
+as an upsert keyed by **(author, object_path)** and `del` as a delete by the same key.
 Duplicates are expected after retries and must be harmless: a repeated put replaces
 the same reference, and deleting an absent key is a no-op. Do not increment a
 counter for every line.
@@ -75,12 +74,10 @@ To intentionally rebuild later (for example after replacing/clearing Redis):
 nexusd --config-dir /path/to/config jobs run resource-changes-seed
 ```
 
-The job is unscheduled by default. It walks every User–TAGGED–Resource edge and
-durable AppPost node ordered
+The job is unscheduled by default. It walks every User–TAGGED–Resource edge ordered
 by `indexed_at`, with deterministic author/path/ID tie breakers, into a temporary
 Redis list in batches of 1000. The stored tag URI supplies its path; legacy edges
 without one use their stored app and tag ID. It never renormalizes or changes IDs.
-Current feed-only app metadata is then copied from Redis into the same snapshot.
 At publication, one Lua operation copies the old list's live suffix after the
 snapshot, swaps the lists, and increments the epoch counter. Thus watcher appends
 during the build survive. The suffix can repeat snapshot references; the same
@@ -92,18 +89,15 @@ graph scan.
 A shared seed lease prevents overlapping job/migration seeds; publication checks
 ownership. The build has a one-hour deadline; temporary keys and the lease expire
 if the process dies, leaving the old feed intact. An empty graph still publishes
-an empty feed with a new epoch when no feed-only app metadata remains. The random initial numeric epoch also distinguishes
+an empty feed with a new epoch. The random initial numeric epoch also distinguishes
 a newly initialized feed after Redis is cleared. Redis persistence protects both
 the list and pending delete records; after loss of Redis state, run the seed job.
-The seed describes current graph references and retained feed-only metadata, not
-historical deletions. Graph reseeding cannot recover feed-only metadata lost with
-Redis; those objects require source replay/re-ingestion.
+The seed describes current graph references, not historical deletions.
 
 The list is `Event:ResourceChanges`, its epoch is `Event:ResourceChanges:Epoch`.
 `Event:ResourceChanges:PendingDelete:*` retains interrupted delete details;
 `Event:ResourceChanges:Seed:*` and `Event:ResourceChanges:SeedLock` are temporary.
-`Event:ResourceChanges:FeedOnlyAppPosts` retains the current feed-only app lines.
-This feed follows accepted tag and app-post events; it does not add hooks for unrelated graph
+This feed follows accepted tag events; it does not add hooks for unrelated graph
 maintenance or profile-deletion cascades. Rebuilding reconciles current graph state.
 
 ## Hydrating references
