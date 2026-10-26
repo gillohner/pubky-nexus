@@ -281,7 +281,16 @@ async fn seed_inner(token: &str, temp: &str) -> ModelResult<u64> {
         .execute(Query::new(
             "app_post_changes_seed",
             r"
-        MATCH (p:AppPost) RETURN p ORDER BY p.indexed_at, p.uri
+        CALL {
+            MATCH (p:AppPost) RETURN p
+            UNION ALL
+            MATCH (s:Post) WHERE s.post_feed_version IS NOT NULL AND NOT coalesce(s.deleted, false)
+            RETURN {uri: s.uri, version_uri: 'pubky://' + s.author + s.post_feed_version,
+                    id: s.id, author: s.author, path: '/pub/social/v1/posts/' + s.id,
+                    namespace: 'social', kind: s.post_feed_kind, indexed_at: s.post_feed_at,
+                    parent: null, embed: null} AS p
+        }
+        RETURN p ORDER BY p.indexed_at, p.uri
     ",
         ))
         .await
@@ -437,20 +446,25 @@ mod tests {
         }
         let (_, epoch, _) = AppPostChange::get_from_index(0, 0).await?;
         AppPostChange::reseed().await?;
-        let (page, next_epoch, _) = AppPostChange::get_from_index(0, 1000).await?;
+        let (page, next_epoch, seed_length) = AppPostChange::get_from_index(0, 1000).await?;
         assert_ne!(epoch, next_epoch);
-        assert_eq!(page.lines.len(), 3);
-        assert_eq!(page.lines[0].post_kind, "availability");
+        let own: Vec<_> = page
+            .lines
+            .iter()
+            .filter(|line| line.author == author)
+            .collect();
+        assert_eq!(own.len(), 3);
+        assert_eq!(own[0].post_kind, "availability");
         assert_eq!(
-            page.lines[0].version.as_deref(),
+            own[0].version.as_deref(),
             Some(durable.version_path().as_str())
         );
         // A version deletion preserves the other version's metadata, including its own kind.
         AppPostChange::prepare_version_delete(&first).await?;
         AppPostChange::finish_delete(&first).await?;
         AppPostChange::finish_delete(&first).await?;
-        let (page, _, length) = AppPostChange::get_from_index(3, 10).await?;
-        assert_eq!(length, 4);
+        let (page, _, length) = AppPostChange::get_from_index(seed_length, 10).await?;
+        assert_eq!(length, seed_length + 1);
         assert_eq!(page.lines.len(), 1);
         assert_eq!(
             page.lines[0].version.as_deref(),
@@ -471,7 +485,13 @@ mod tests {
         whole.prepare_delete().await?;
         AppPostChange::finish_delete(&logical).await?;
         assert!(AppPostChange::version_record(&second).await?.is_none());
-        assert_eq!(AppPostChange::get_from_index(4, 10).await?.0.lines, [whole]);
+        assert_eq!(
+            AppPostChange::get_from_index(seed_length + 1, 10)
+                .await?
+                .0
+                .lines,
+            [whole]
+        );
         assert!(AppPostChange::get_from_index(u64::MAX, 1000)
             .await?
             .0
@@ -500,6 +520,51 @@ mod tests {
                 Query::new(
                     "app_feed_seed_cleanup",
                     "MATCH (u:User {id: $author}) DETACH DELETE u",
+                )
+                .param("author", author),
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio_shared_rt::test(shared)]
+    async fn live_seed_recovers_selected_social_head_without_redis_metadata(
+    ) -> Result<(), crate::types::DynError> {
+        StackManager::setup(&StackConfig::default()).await?;
+        let author = pubky::Keypair::random().public_key().to_z32();
+        let path = AppPostUri::parse_social(&format!(
+            "pubky://{author}/pub/social/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ.json"
+        ))
+        .unwrap();
+        let graph = get_neo4j_graph()?;
+        graph
+            .run(
+                Query::new(
+                    "social_feed_seed_test",
+                    r"
+            CREATE (:Post {author: $author, id: $id, uri: $uri, post_feed_version: $version,
+                           post_feed_kind: 'event', post_feed_at: 1234})
+        ",
+                )
+                .param("author", author.clone())
+                .param("id", path.id.clone())
+                .param("uri", path.uri())
+                .param("version", path.version_path()),
+            )
+            .await?;
+        AppPostChange::reseed().await?;
+        let lines = AppPostChange::get_from_index(0, 1000).await?.0.lines;
+        let line = lines.iter().find(|line| line.author == author).unwrap();
+        assert_eq!(line.namespace, "social");
+        assert_eq!(line.post_kind, "event");
+        assert_eq!(line.version.as_deref(), Some(path.version_path().as_str()));
+        assert_eq!(line.at, 1234);
+        assert!(AppPostChange::version_record(&path).await?.is_none());
+        graph
+            .run(
+                Query::new(
+                    "social_feed_seed_cleanup",
+                    "MATCH (p:Post {author: $author}) DELETE p",
                 )
                 .param("author", author),
             )

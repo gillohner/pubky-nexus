@@ -109,6 +109,21 @@ pub fn default_app_kinds() -> BTreeMap<String, AppKindsConfig> {
     )])
 }
 
+/// Social v1 kinds whose content-free references also enter the app-post feed.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct PostFeedConfig {
+    pub social_kinds: Vec<String>,
+}
+
+impl Default for PostFeedConfig {
+    fn default() -> Self {
+        Self {
+            social_kinds: vec!["event".into(), "rsvp".into()],
+        }
+    }
+}
+
 /// Configuration settings for the Nexus Watcher service
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct WatcherConfig {
@@ -192,6 +207,9 @@ pub struct WatcherConfig {
     #[serde(default = "default_app_kinds")]
     pub app_kinds: BTreeMap<String, AppKindsConfig>,
 
+    #[serde(default)]
+    pub post_feed: PostFeedConfig,
+
     // Moderation
     pub moderation_id: PubkyId,
     pub moderated_tags: Vec<String>,
@@ -223,6 +241,7 @@ impl Default for WatcherConfig {
             max_file_size: DEFAULT_MAX_FILE_SIZE,
             retry: EventRetryConfig::default(),
             app_kinds: default_app_kinds(),
+            post_feed: PostFeedConfig::default(),
             moderation_id,
             moderated_tags: MODERATED_TAGS.iter().map(|s| s.to_string()).collect(),
         }
@@ -289,4 +308,20 @@ fn default_retry_processor_interval_ms() -> u64 {
 
 fn default_max_file_size() -> u64 {
     DEFAULT_MAX_FILE_SIZE
+}
+
+#[cfg(test)]
+mod post_feed_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_and_explicit_social_selection() {
+        let defaults: PostFeedConfig = toml::from_str("").unwrap();
+        assert_eq!(defaults.social_kinds, ["event", "rsvp"]);
+        let disabled: PostFeedConfig = toml::from_str("social_kinds = []").unwrap();
+        assert!(disabled.social_kinds.is_empty());
+        let selected: PostFeedConfig = toml::from_str("social_kinds = [\"note\"]").unwrap();
+        assert_eq!(selected.social_kinds, ["note"]);
+        assert_eq!(default_app_kinds()["music"].feed_only, ["listening"]);
+    }
 }

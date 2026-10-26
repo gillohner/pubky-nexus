@@ -63,10 +63,7 @@ async fn namespace_stream_is_explicit_filtered_and_content_free() -> Result<()> 
             && post.get("ext").is_none()));
     let listens = get_request(&format!("{endpoint}&kind=listen")).await?;
     assert_eq!(listens.as_array().unwrap().len(), 2);
-    let sessions = get_request(&format!(
-        "{endpoint}&exclude_kinds=listen&source=author&author_id={author}"
-    ))
-    .await?;
+    let sessions = get_request(&format!("{endpoint}&exclude_kinds=listen&source=author")).await?;
     assert_eq!(sessions.as_array().unwrap().len(), 1);
     assert_eq!(sessions[0]["kind"], "session");
     let page = get_request(&format!("{endpoint}&skip=1&limit=1")).await?;

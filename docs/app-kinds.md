@@ -102,6 +102,28 @@ The metadata's `version_uri` is the source file to fetch. The response contains 
 content, extensions, attachments or lock payload. Feed-only posts have no stream
 entry.
 
+## Selected social posts
+
+```toml
+[watcher.post_feed]
+social_kinds = ["event", "rsvp"]
+```
+
+Use `[post_feed]` in the standalone watcher config. These defaults select public
+`/pub/social/v1/posts/{id}/{editId}.json` posts for the app-post feed too. An
+explicit list replaces the defaults; `[]` disables social feed references.
+Selection affects subsequent events and does not reclassify old versions.
+
+The watcher reads the kind with `PostEnvelope<AppKind>` at the unchanged
+`pubky-social-specs` v1 pin `acde362`. Known social kinds retain the pinned
+content validation; other valid lowercase tokens use the catch-all envelope and
+N3's existing `Unknown` storage kind. Social posts still use `Post` nodes, social
+streams, relationships and indexing, independently of feed selection. They never
+become `AppPost` nodes. The line preserves the original token as `post_kind` and
+uses `namespace: "social"`; Pinakes fetches time, venue and other content from the
+stored version. Nexus does not send those fields in the feed. No v1.1 dependency
+or app-specific payload interpretation is added.
+
 ## App-post changes feed
 
 `GET /v0/app-posts/changes?cursor=0&limit=500` reads the independent Redis list
@@ -148,7 +170,7 @@ local state from cursor 0. Retain the previous epoch when the header is absent.
 Each feed has its own cursor and epoch; never reuse one feed's cursor on the other.
 
 The `app-post-changes-seed` daemon job snapshots current version metadata and
-recovers durable app heads from the graph if their append did not complete. It
+recovers durable app and selected social heads from the graph if their append did not complete. It
 then atomically appends the old list's live suffix and publishes a new epoch. A
 lease protects publication; interrupted seeds leave the old generation intact.
 Snapshot duplicates and concurrent suffix duplicates are harmless. Run the job
@@ -156,7 +178,7 @@ after upgrading all writers, and whenever a snapshot rebuild is needed. It does
 not reseed or mutate the resource feed.
 
 Redis persistence is required for prior-version, feed-only and pending-delete
-metadata. After Redis loss, the graph can restore durable heads, but historical
+metadata. After Redis loss, the graph can restore durable app and selected social heads, but historical
 versions and feed-only objects require source replay/re-ingestion. The feed
 records accepted events, not unrelated graph maintenance or profile cascades.
 For an upgrade from a mixed-feed build, check for app lines in the old resource

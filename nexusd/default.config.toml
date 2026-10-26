@@ -64,6 +64,9 @@ moderated_tags = [
 ]
 
 # App spec supplied feed_only kinds; namespaces without an entry are durable.
+[watcher.post_feed]
+social_kinds = ["event", "rsvp"]
+
 [watcher.app_kinds.music]
 feed_only = ["listening"]
 

@@ -69,5 +69,8 @@ slow_query_logging_threshold_ms = 100
 #slow_query_logging_include_cypher = false
 
 # App spec supplied feed_only kinds; namespaces without an entry are durable.
+[post_feed]
+social_kinds = ["event", "rsvp"]
+
 [app_kinds.music]
 feed_only = ["listening"]

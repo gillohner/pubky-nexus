@@ -423,3 +423,130 @@ async fn kind_edits_and_operator_config_change_the_tier_without_stale_metadata()
     test.cleanup_user(&key).await?;
     Ok(())
 }
+
+#[tokio_shared_rt::test(shared)]
+async fn selected_social_kinds_stay_social_and_emit_version_references() -> Result<()> {
+    let (mut test, key, author) = setup().await?;
+    let (_, _, cursor) = AppPostChange::get_from_index(0, 0).await?;
+    let mut paths = Vec::new();
+    for kind in ["event", "rsvp", "note"] {
+        let id = generate_post_id();
+        let path: ResourcePath = format!("/pub/social/v1/posts/{id}/{id}.json").parse()?;
+        let body = json!({"kind":kind, "content":"{opaque event/venue data}", "ext":{"secret":"not in line"}});
+        test.put(&key, &path, &body).await?;
+        let social = PostDetails::get_by_id(&author, &id)
+            .await?
+            .expect("still indexed as social");
+        assert_eq!(social.content, body["content"].as_str().unwrap());
+        assert!(
+            AppPost::get(&format!("pubky://{author}/pub/social/v1/posts/{id}"))
+                .await?
+                .is_none()
+        );
+        paths.push((path, id));
+    }
+    let lines = own_lines(&author, cursor).await?;
+    assert_eq!(lines.len(), 2);
+    for (index, kind) in ["event", "rsvp"].into_iter().enumerate() {
+        assert_eq!(lines[index].namespace, "social");
+        assert_eq!(lines[index].post_kind, kind);
+        assert_eq!(
+            lines[index].version.as_deref(),
+            Some(paths[index].0.to_string().as_str())
+        );
+        assert_eq!(
+            lines[index].post,
+            format!("/pub/social/v1/posts/{}", paths[index].1)
+        );
+        let json = serde_json::to_value(&lines[index])?;
+        assert_eq!(json.as_object().unwrap().len(), 7);
+        assert!(json.get("content").is_none());
+        assert!(json.get("ext").is_none());
+    }
+    for (path, _) in paths {
+        test.del(&key, &path).await?;
+    }
+    let lines = own_lines(&author, cursor).await?;
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[2].op, AppPostChangeOp::Del);
+    assert_eq!(lines[3].post_kind, "rsvp");
+    test.cleanup_user(&key).await?;
+    Ok(())
+}
+
+#[tokio_shared_rt::test(shared)]
+async fn social_kind_selection_and_graph_commit_retry() -> Result<()> {
+    use nexus_common::config::watcher::PostFeedConfig;
+    use nexus_watcher::events::{DefaultEventHandler, Event, EventHandler, ParseResult};
+    use std::sync::Arc;
+    let (test, key, author) = setup().await?;
+    let mut test = test.remove_event_processing().await;
+    let (_, _, cursor) = AppPostChange::get_from_index(0, 0).await?;
+    let mut config = nexus_common::WatcherConfig {
+        post_feed: PostFeedConfig {
+            social_kinds: vec![],
+        },
+        ..Default::default()
+    };
+    let client = test.event_processor_runner.client.clone();
+    let disabled = DefaultEventHandler::from_config(&config, client.clone());
+    let id = generate_post_id();
+    let path: ResourcePath = format!("/pub/social/v1/posts/{id}/{id}.json").parse()?;
+    let uri = format!("pubky://{author}{path}");
+    test.put(&key, &path, &envelope(&id, "event")).await?;
+    let ParseResult::Parsed(event) = Event::parse_event(&format!("PUT {uri}"))? else {
+        panic!("parsed");
+    };
+    disabled.handle(&event).await?;
+    assert!(PostDetails::get_by_id(&author, &id).await?.is_some());
+    assert!(own_lines(&author, cursor).await?.is_empty());
+    // Models graph commit without append. The default handler must append on retry
+    // even though the social node already exists and its content is unchanged.
+    let enabled = Arc::new(DefaultEventHandler::from_config(
+        &nexus_common::WatcherConfig::default(),
+        client.clone(),
+    ));
+    enabled.handle(&event).await?;
+    enabled.handle(&event).await?;
+    let lines = own_lines(&author, cursor).await?;
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].post, lines[1].post);
+    assert_eq!(lines[0].version, lines[1].version);
+    let parsed = AppPostUri::parse_social(&uri).unwrap();
+    nexus_watcher::events::handlers::post_feed::before_del(&parsed).await?;
+    // Simulate interrupted delete after graph/cache removal but before append.
+    let ingestor = nexus_common::utils::test_utils::default_ingestor_tests();
+    nexus_watcher::events::handlers::post::del(
+        nexus_watcher::events::inputs::ResourceKey {
+            owner_id: parsed.author.clone(),
+            resource_id: id.clone(),
+        },
+        &ingestor,
+    )
+    .await?;
+    retrieve_and_handle_event_line(&format!("DEL {uri}"), enabled.clone()).await?;
+    retrieve_and_handle_event_line(&format!("DEL {uri}"), enabled.clone()).await?;
+    assert_eq!(own_lines(&author, cursor).await?.len(), 3);
+    assert!(AppPostChange::version_record(&parsed).await?.is_none());
+    test.del(&key, &path).await?;
+    // Explicit selection replaces the defaults, without changing social indexing.
+    config.post_feed.social_kinds = vec!["note".into()];
+    let selected = Arc::new(DefaultEventHandler::from_config(&config, client));
+    for kind in ["note", "rsvp"] {
+        let id = generate_post_id();
+        let path: ResourcePath = format!("/pub/social/v1/posts/{id}/{id}.json").parse()?;
+        test.put(&key, &path, &envelope(&id, kind)).await?;
+        retrieve_and_handle_event_line(&format!("PUT pubky://{author}{path}"), selected.clone())
+            .await?;
+        assert!(PostDetails::get_by_id(&author, &id).await?.is_some());
+        test.del(&key, &path).await?;
+        retrieve_and_handle_event_line(&format!("DEL pubky://{author}{path}"), selected.clone())
+            .await?;
+    }
+    let lines = own_lines(&author, cursor).await?;
+    assert_eq!(lines.len(), 5);
+    assert_eq!(lines[3].post_kind, "note");
+    assert_eq!(lines[4].op, AppPostChangeOp::Del);
+    test.cleanup_user(&key).await?;
+    Ok(())
+}
