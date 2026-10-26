@@ -99,3 +99,7 @@ password = "12345678"
 slow_query_logging_threshold_ms = 100
 # Include the Cypher query text in slow query log entries
 #slow_query_logging_include_cypher = false
+
+# App spec supplied feed_only kinds; namespaces without an entry are durable.
+[app_kinds.music]
+feed_only = ["listening"]

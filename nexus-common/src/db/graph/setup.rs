@@ -20,6 +20,7 @@ pub async fn setup_graph() -> GraphResult<()> {
 async fn setup_graph_inner() -> GraphResult<()> {
     // Define unique constraints
     let constraints = [
+        "CREATE CONSTRAINT uniqueAppPostUri IF NOT EXISTS FOR (p:AppPost) REQUIRE p.uri IS UNIQUE",
         "CREATE CONSTRAINT uniqueUserId IF NOT EXISTS FOR (u:User) REQUIRE u.id IS UNIQUE",
         "CREATE CONSTRAINT uniquePostId IF NOT EXISTS FOR (p:Post) REQUIRE p.id IS UNIQUE",
         "CREATE CONSTRAINT uniqueFileId IF NOT EXISTS FOR (f:File) REQUIRE (f.owner_id, f.id) IS UNIQUE",
@@ -31,6 +32,7 @@ async fn setup_graph_inner() -> GraphResult<()> {
     // User.id / Post.id / File.(owner_id,id) / Homeserver.id need no CREATE INDEX:
     // the UNIQUE constraints above already create a backing index for them.
     let indexes = [
+        "CREATE INDEX appPostNamespaceTime IF NOT EXISTS FOR (p:AppPost) ON (p.namespace, p.indexed_at)",
         "CREATE INDEX postTimestampIndex IF NOT EXISTS FOR (p:Post) ON (p.indexed_at)",
         "CREATE INDEX postKindIndex IF NOT EXISTS FOR (p:Post) ON (p.kind)",
         "CREATE INDEX taggedLabelIndex IF NOT EXISTS FOR ()-[r:TAGGED]-() ON (r.label)",

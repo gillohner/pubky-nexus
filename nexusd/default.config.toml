@@ -63,6 +63,10 @@ moderated_tags = [
     "il_adult_nu_sex_act",
 ]
 
+# App spec supplied feed_only kinds; namespaces without an entry are durable.
+[watcher.app_kinds.music]
+feed_only = ["listening"]
+
 # Event retry configuration
 [watcher.retry]
 # Transient error retry limit before dead-letter

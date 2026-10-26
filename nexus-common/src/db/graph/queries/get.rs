@@ -40,6 +40,7 @@ pub fn get_post_by_id(author_id: &str, post_id: &str) -> Query {
                 kind: COALESCE(p.kind, 'short'),
                 attachments: p.attachments,
                 lock: p.lock,
+                app_parent: p.app_parent,
                 // Posts written before the flag lack the property and are live
                 deleted: COALESCE(p.deleted, false)
             } as details,
@@ -70,7 +71,7 @@ pub fn post_counts(author_id: &str, post_id: &str) -> Query {
                 reposts: COUNT { (p)<-[:REPOSTED]-() },
                 collections: COUNT { (p)<-[:COLLECTED]-() }
             } AS counts,
-            EXISTS { (p)-[:REPLIED]->(:Post) } AS is_reply
+            (p.app_parent IS NOT NULL OR EXISTS { (p)-[:REPLIED]->(:Post) }) AS is_reply
     ",
     )
     .param("author_id", author_id)
@@ -245,7 +246,7 @@ pub fn post_relationships(author_id: &str, post_id: &str) -> Query {
         OPTIONAL MATCH (p)-[:REPOSTED]->(reposted_post:Post)<-[:AUTHORED]-(reposted_author:User)
         OPTIONAL MATCH (p)-[:MENTIONED]->(mentioned_user:User)
         RETURN
-          replied_post.uri AS replied_uri,
+          coalesce(p.app_parent, replied_post.uri) AS replied_uri,
           reposted_post.uri AS reposted_uri,
           COLLECT(mentioned_user.id) AS mentioned_user_ids",
     )
@@ -262,6 +263,7 @@ pub fn post_parents(author_id: &str, post_id: &str) -> Query {
         OPTIONAL MATCH (p)-[:REPLIED]->(replied_post:Post)<-[:AUTHORED]-(replied_author:User)
         OPTIONAL MATCH (p)-[:REPOSTED]->(reposted_post:Post)<-[:AUTHORED]-(reposted_author:User)
         RETURN
+          p.app_parent AS app_replied,
           replied_post.uri AS replied_uri,
           replied_author.id AS replied_author_id,
           replied_post.id AS replied_post_id,
@@ -446,7 +448,7 @@ pub fn author_post_entries(author_id: &str, after: (i64, &str), limit: usize) ->
         RETURN author.id AS author_id,
             p.id AS post_id,
             p.indexed_at AS indexed_at,
-            EXISTS { (p)-[:REPLIED]->(:Post) } AS is_reply,
+            (p.app_parent IS NOT NULL OR EXISTS { (p)-[:REPLIED]->(:Post) }) AS is_reply,
             COLLECT { MATCH (p)<-[tag:TAGGED]-(:User) RETURN DISTINCT tag.label } AS labels,
             COUNT { (p)<-[:TAGGED]-() }
                 + COUNT { (p)<-[:REPLIED]-() }
@@ -1048,7 +1050,7 @@ const USER_COUNT_FIELDS: &[(&str, &str)] = &[
     ("posts", POSTS_COUNT),
     (
         "replies",
-        "COUNT { (u)-[:AUTHORED]->(:Post)-[:REPLIED]->(:Post) }",
+        "COUNT { (u)-[:AUTHORED]->(reply:Post) WHERE reply.app_parent IS NOT NULL OR EXISTS { (reply)-[:REPLIED]->(:Post) } }",
     ),
     (
         "collections",
@@ -1679,7 +1681,7 @@ pub fn post_stream(
     if !matches!(source, StreamSource::Bookmarks { .. }) {
         append_condition(
             &mut cypher,
-            "NOT ( (p)-[:REPLIED]->(:Post) )",
+            "p.app_parent IS NULL AND NOT ( (p)-[:REPLIED]->(:Post) )",
             &mut where_clause_applied,
         );
     }
@@ -2126,7 +2128,7 @@ mod tests {
         let clauses = [
             "MATCH (:User)-[tag:TAGGED]->(p)",
             "p.kind = 'short'",
-            "NOT ( (p)-[:REPLIED]->(:Post) )",
+            "p.app_parent IS NULL AND NOT ( (p)-[:REPLIED]->(:Post) )",
             "WITH DISTINCT p\nORDER BY p.indexed_at DESC, p.id DESC",
             "MATCH (p)<-[:AUTHORED]-(author:User)",
             &rule,

@@ -22,7 +22,12 @@ async fn authored_since(author: &str, mut cursor: u64) -> Result<Vec<ResourceCha
             break;
         }
         cursor = page.next_cursor;
-        lines.extend(page.lines.into_iter().filter(|line| line.author == author));
+        lines.extend(
+            page.lines
+                .into_iter()
+                .filter_map(|line| line.into_resource())
+                .filter(|line| line.author == author),
+        );
     }
     Ok(lines)
 }

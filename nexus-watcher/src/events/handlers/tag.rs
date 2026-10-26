@@ -74,7 +74,8 @@ pub async fn sync_put(
             )
             .await
         }
-        other @ (ReferenceTarget::File(_)
+        other @ (ReferenceTarget::AppPost(_)
+        | ReferenceTarget::File(_)
         | ReferenceTarget::Tag { .. }
         | ReferenceTarget::Other) => Err(EventProcessorError::UnsupportedTarget(format!(
             "The tagged resource {} is not Post or User, instead is: {}",
@@ -97,7 +98,10 @@ pub async fn sync_put_resource(
 
     match &tag.tagged.target {
         ReferenceTarget::Post(_) | ReferenceTarget::User(_) => sync_put(tag, key, ingestor).await,
-        ReferenceTarget::File(_) | ReferenceTarget::Tag { .. } | ReferenceTarget::Other => {
+        ReferenceTarget::AppPost(_)
+        | ReferenceTarget::File(_)
+        | ReferenceTarget::Tag { .. }
+        | ReferenceTarget::Other => {
             let ResourceKey {
                 owner_id: tagger_id,
                 resource_id: tag_id,

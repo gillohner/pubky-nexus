@@ -44,6 +44,11 @@ pub fn create_post(
     let mut cypher = String::new();
     let mut new_relationships = Vec::new();
 
+    // A new app reply needs its parent. Edits/tombstones keep their logical parent
+    // even after its AppPost node has been deleted.
+    if post.app_parent.is_some() {
+        cypher.push_str("OPTIONAL MATCH (app_reply_parent:AppPost {uri: $app_parent})\nWITH app_reply_parent\nWHERE app_reply_parent IS NOT NULL OR EXISTS { (:User {id: $author_id})-[:AUTHORED]->(:Post {id: $post_id, app_parent: $app_parent}) }\n");
+    }
     // Check if all the dependencies are consistent in the graph
     if replied.is_some() {
         cypher.push_str("
@@ -79,9 +84,15 @@ pub fn create_post(
             new_post.kind = $kind,
             new_post.attachments = $attachments,
             new_post.lock = $lock,
-            new_post.deleted = $deleted
-        RETURN existing_post IS NOT NULL AS flag",
+            new_post.deleted = $deleted,
+            new_post.app_parent = $app_parent
+        ",
     );
+
+    if post.app_parent.is_some() {
+        cypher.push_str("FOREACH (_ IN CASE WHEN app_reply_parent IS NULL THEN [] ELSE [1] END | MERGE (new_post)-[:REPLIED]->(app_reply_parent))\n");
+    }
+    cypher.push_str("RETURN existing_post IS NOT NULL AS flag");
 
     let kind = serde_json::to_string(&post.kind)
         .map_err(|e| GraphError::SerializationFailed(Box::new(e)))?;
@@ -96,7 +107,8 @@ pub fn create_post(
         .param("attachments", post.attachments.clone().unwrap_or_default())
         // Pass Option directly so None clears the property; "" would read back as Some("").
         .param("lock", post.lock.clone())
-        .param("deleted", post.deleted);
+        .param("deleted", post.deleted)
+        .param("app_parent", post.app_parent.clone());
 
     if let Some(parent) = replied {
         cypher_query = cypher_query

@@ -30,6 +30,8 @@ pub struct Reference {
 /// What a [`Reference`] names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReferenceTarget {
+    /// An app post, identified by its full logical URI.
+    AppPost(nexus_common::models::app_post::AppPostUri),
     /// A post: its author and post id.
     Post(ResourceKey),
     /// A user's profile.
@@ -53,6 +55,7 @@ impl ReferenceTarget {
         match self {
             Self::Post(key) | Self::File(key) | Self::Tag { key, .. } => Some(&key.owner_id),
             Self::User(user_id) => Some(user_id),
+            Self::AppPost(post) => Some(&post.author),
             Self::Other => None,
         }
     }
@@ -110,6 +113,13 @@ impl PostInput {
             attachments: Some(self.attachments),
             lock: self.lock,
             deleted: false,
+            app_parent: self
+                .parent
+                .as_ref()
+                .and_then(|reference| match &reference.target {
+                    ReferenceTarget::AppPost(post) => Some(post.uri()),
+                    _ => None,
+                }),
         }
     }
 
@@ -131,6 +141,13 @@ impl PostInput {
         PostParents {
             replied: self.parent.as_ref().and_then(post_parent),
             reposted: self.embed.as_ref().and_then(post_parent),
+            app_replied: self
+                .parent
+                .as_ref()
+                .and_then(|reference| match &reference.target {
+                    ReferenceTarget::AppPost(post) => Some(post.uri()),
+                    _ => None,
+                }),
         }
     }
 

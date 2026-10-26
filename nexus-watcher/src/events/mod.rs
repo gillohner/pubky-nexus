@@ -14,10 +14,12 @@ pub use target::EventTarget;
 use crate::errors::EventProcessorError;
 use crate::homeserver::HomeserverClient;
 use crate::METER_NAME;
+use nexus_common::config::watcher::{default_app_kinds, AppKindsConfig};
 use nexus_common::models::takedown::is_taken_down;
 use nexus_common::WatcherConfig;
 use opentelemetry::{global, metrics::Counter};
 use pubky::PubkyResource;
+use std::collections::BTreeMap;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
@@ -57,6 +59,7 @@ pub struct DefaultEventHandler {
 
     /// Local files directory on Nexus used for file-backed events.
     files_path: PathBuf,
+    app_kinds: BTreeMap<String, AppKindsConfig>,
 }
 
 impl DefaultEventHandler {
@@ -71,6 +74,7 @@ impl DefaultEventHandler {
             ingestor,
             client,
             files_path,
+            app_kinds: default_app_kinds(),
         }
     }
 
@@ -79,12 +83,14 @@ impl DefaultEventHandler {
     /// `client` too.
     pub fn from_config(config: &WatcherConfig, client: Arc<dyn HomeserverClient>) -> Self {
         let ingestor = UserIngestor::from_config(&config.stack, client.clone());
-        Self::new(
+        let mut handler = Self::new(
             Moderation::from_config(config),
             Arc::new(ingestor),
             client,
             config.stack.files_path.clone(),
-        )
+        );
+        handler.app_kinds = config.app_kinds.clone();
+        handler
     }
 }
 
@@ -99,6 +105,7 @@ impl EventHandler for DefaultEventHandler {
                     self.moderation.clone(),
                     self.ingestor.clone(),
                     self.client.as_ref(),
+                    &self.app_kinds,
                 )
                 .await
             }
@@ -120,6 +127,7 @@ pub async fn handle_put_event(
     moderation: Arc<Moderation>,
     ingestor: Arc<UserIngestor>,
     client: &dyn HomeserverClient,
+    app_kinds: &BTreeMap<String, AppKindsConfig>,
 ) -> Result<(), EventProcessorError> {
     // Whatever order events arrive in, a record the moderator took down stays down. A
     // copy left behind by an earlier attempt whose removal failed is removed here too.
@@ -133,6 +141,9 @@ pub async fn handle_put_event(
     let blob = client.get_resource(&pubky_resource).await?;
 
     let outcome = match translate_put(&event.uri, &event.target, &blob)? {
+        TranslatedPut::AppPost { path, post } => {
+            handlers::app_post::sync_put(&path, post, app_kinds).await
+        }
         TranslatedPut::User { user_id, user } => handlers::user::sync_put(user, user_id).await,
         TranslatedPut::Post { key, post } => handlers::post::sync_put(post, key, &ingestor).await,
         TranslatedPut::Follow {
@@ -204,6 +215,7 @@ pub async fn handle_del_event(
     ingestor: Arc<UserIngestor>,
 ) -> Result<(), EventProcessorError> {
     match translate_del(&event.target)? {
+        TranslatedDel::AppPost(path) => handlers::app_post::del(&path).await,
         TranslatedDel::User { user_id } => handlers::user::del(user_id).await,
         TranslatedDel::Post(key) => match handlers::post::del(key, &ingestor).await {
             Err(EventProcessorError::SkipIndexing)

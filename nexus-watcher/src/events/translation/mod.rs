@@ -14,6 +14,7 @@ use crate::events::inputs::{
     BookmarkInput, FileInput, PostInput, ResourceKey, TagInput, UserInput,
 };
 use crate::events::target::EventTarget;
+use nexus_common::models::app_post::{AppPostInput, AppPostUri};
 use pubky_social_specs::PubkyId;
 
 /// A fetched object with the ids its path carries, one variant per PUT handler.
@@ -22,6 +23,10 @@ use pubky_social_specs::PubkyId;
 /// and every input but the bookmark's carries the address its object is stored under.
 #[derive(Debug)]
 pub enum TranslatedPut {
+    AppPost {
+        path: AppPostUri,
+        post: AppPostInput,
+    },
     User {
         user_id: PubkyId,
         user: UserInput,
@@ -53,6 +58,7 @@ pub enum TranslatedPut {
 /// A deletion with the ids its path carries, one variant per DEL handler.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TranslatedDel {
+    AppPost(AppPostUri),
     User {
         user_id: PubkyId,
     },
@@ -81,6 +87,12 @@ pub(super) fn translate_put(
     bytes: &[u8],
 ) -> Result<TranslatedPut, EventProcessorError> {
     match target {
+        EventTarget::AppPost(path) => Ok(TranslatedPut::AppPost {
+            path: path.clone(),
+            post: path
+                .read(bytes)
+                .map_err(EventProcessorError::SpecValidation)?,
+        }),
         EventTarget::Legacy(parsed) => legacy_v0::translate_put(event_uri, parsed, bytes),
         EventTarget::Social(parsed) => social_v1::translate_put(event_uri, parsed, bytes),
     }
@@ -92,6 +104,7 @@ pub(super) fn translate_put(
 /// [`translate_put`].
 pub(super) fn translate_del(target: &EventTarget) -> Result<TranslatedDel, EventProcessorError> {
     match target {
+        EventTarget::AppPost(path) => Ok(TranslatedDel::AppPost(path.clone())),
         EventTarget::Legacy(parsed) => legacy_v0::translate_del(parsed),
         EventTarget::Social(parsed) => social_v1::translate_del(parsed),
     }

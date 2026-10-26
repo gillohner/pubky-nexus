@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use pubky_social_specs::legacy_v0::VALIDATION_LIMITS;
 use pubky_social_specs::PubkyId;
 use serde::{de::Error, Deserialize, Deserializer, Serialize};
-use std::fmt::Debug;
+use std::{collections::BTreeMap, fmt::Debug};
 
 // Testnet homeserver key
 pub const HOMESERVER_PUBKY: &str = "8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo";
@@ -93,6 +93,22 @@ impl Default for EventRetryConfig {
     }
 }
 
+/// App-owned kinds that are references only, without a graph node.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+pub struct AppKindsConfig {
+    #[serde(default)]
+    pub feed_only: Vec<String>,
+}
+
+pub fn default_app_kinds() -> BTreeMap<String, AppKindsConfig> {
+    BTreeMap::from([(
+        "music".into(),
+        AppKindsConfig {
+            feed_only: vec!["listening".into()],
+        },
+    )])
+}
+
 /// Configuration settings for the Nexus Watcher service
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct WatcherConfig {
@@ -173,6 +189,9 @@ pub struct WatcherConfig {
     #[serde(default)]
     pub retry: EventRetryConfig,
 
+    #[serde(default = "default_app_kinds")]
+    pub app_kinds: BTreeMap<String, AppKindsConfig>,
+
     // Moderation
     pub moderation_id: PubkyId,
     pub moderated_tags: Vec<String>,
@@ -203,6 +222,7 @@ impl Default for WatcherConfig {
             retry_processor_interval_ms: DEFAULT_RETRY_PROCESSOR_INTERVAL_MS,
             max_file_size: DEFAULT_MAX_FILE_SIZE,
             retry: EventRetryConfig::default(),
+            app_kinds: default_app_kinds(),
             moderation_id,
             moderated_tags: MODERATED_TAGS.iter().map(|s| s.to_string()).collect(),
         }

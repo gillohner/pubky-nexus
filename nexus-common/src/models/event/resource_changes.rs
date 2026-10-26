@@ -3,6 +3,7 @@
 //! Delivery is at least once: consumers upsert/delete by `(author, object_path)`.
 //! Rebuilds preserve live appends made while the graph snapshot is assembled.
 
+use super::app_post_changes::{AppPostChange, FEED_ONLY_APP_POSTS_KEY};
 use crate::db::graph::{GraphError, Query};
 use crate::db::kv::{RedisError, RedisResult};
 use crate::db::{get_neo4j_graph, get_redis_conn, release_lock, try_acquire_lock};
@@ -15,7 +16,7 @@ use std::time::Duration;
 use utoipa::ToSchema;
 
 pub const RESOURCE_CHANGES_KEY: &str = "Event:ResourceChanges";
-const EPOCH_KEY: &str = "Event:ResourceChanges:Epoch";
+pub(super) const EPOCH_KEY: &str = "Event:ResourceChanges:Epoch";
 const SEED_LOCK: &str = "Event:ResourceChanges:SeedLock";
 const SEED_TTL: u64 = 3660;
 const BATCH_SIZE: usize = 1000;
@@ -57,15 +58,32 @@ pub struct ResourceChange {
     pub at: i64,
 }
 
+/// Existing resource-reference lines and app-owned post lines share one cursor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ReferenceChange {
+    Resource(ResourceChange),
+    AppPost(AppPostChange),
+}
+
+impl ReferenceChange {
+    pub fn into_resource(self) -> Option<ResourceChange> {
+        match self {
+            Self::Resource(line) => Some(line),
+            Self::AppPost(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ResourceChangesPage {
-    pub lines: Vec<ResourceChange>,
+    pub lines: Vec<ReferenceChange>,
     pub next_cursor: u64,
 }
 
 // A random 48-bit initial counter avoids reusing a feed identity after Redis is
 // cleared. INCR on reseed remains exact in Redis Lua's numeric representation.
-fn epoch_seed() -> u64 {
+pub(super) fn epoch_seed() -> u64 {
     let token = pubky::Keypair::random().public_key().to_z32();
     let digest = blake3::hash(token.as_bytes());
     let mut bytes = [0; 8];
@@ -73,7 +91,7 @@ fn epoch_seed() -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-fn pending_key(author: &str, object_path: &str) -> String {
+pub(super) fn pending_key(author: &str, object_path: &str) -> String {
     format!("Event:ResourceChanges:PendingDelete:{author}:{object_path}")
 }
 
@@ -250,29 +268,44 @@ async fn seed_inner(token: &str, temp: &str) -> ModelResult<u64> {
         .execute(Query::new(
             "resource_changes_seed",
             r"
-        MATCH (u:User)-[t:TAGGED]->(r:Resource)
-        RETURN u.id AS author, r.id AS resource_id, r.uri AS uri,
-               t.label AS label, t.indexed_at AS indexed_at,
-               coalesce(t.uri, 'pubky://' + u.id + '/pub/' +
-                   coalesce(t.app, 'pubky.app') + '/tags/' + t.id) AS tag_uri
-        ORDER BY indexed_at, author, tag_uri, resource_id
+        CALL {
+            MATCH (u:User)-[t:TAGGED]->(r:Resource)
+            RETURN u.id AS author, r.id AS resource_id, r.uri AS uri,
+                   t.label AS label, t.indexed_at AS indexed_at,
+                   coalesce(t.uri, 'pubky://' + u.id + '/pub/' +
+                       coalesce(t.app, 'pubky.app') + '/tags/' + t.id) AS object_uri,
+                   null AS app_post
+            UNION ALL
+            MATCH (p:AppPost)
+            RETURN p.author AS author, null AS resource_id, p.uri AS uri,
+                   null AS label, p.indexed_at AS indexed_at, p.uri AS object_uri,
+                   p AS app_post
+        }
+        RETURN author, resource_id, uri, label, indexed_at, object_uri, app_post
+        ORDER BY indexed_at, author, object_uri, resource_id
     ",
         ))
         .await
         .map_err(GraphError::from)?;
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     while let Some(row) = rows.try_next().await.map_err(GraphError::from)? {
-        let tag_uri: String = row.get("tag_uri")?;
-        let line = ResourceChange::tag(
-            ResourceChangeOp::Put,
-            row.get("resource_id")?,
-            row.get("uri")?,
-            row.get("author")?,
-            row.get("label")?,
-            &tag_uri,
-            row.get("indexed_at")?,
-        )?;
-        batch.push(line.json()?);
+        let line =
+            if let Some(post) = row.get::<Option<crate::models::app_post::AppPost>>("app_post")? {
+                serde_json::to_string(&AppPostChange::from_post(post, ResourceChangeOp::Put))
+                    .map_err(ModelError::from_generic)?
+            } else {
+                ResourceChange::tag(
+                    ResourceChangeOp::Put,
+                    row.get("resource_id")?,
+                    row.get("uri")?,
+                    row.get("author")?,
+                    row.get("label")?,
+                    &row.get::<String>("object_uri")?,
+                    row.get("indexed_at")?,
+                )?
+                .json()?
+            };
+        batch.push(line);
         if batch.len() == BATCH_SIZE {
             write_seed_batch(temp, &batch).await?;
             batch.clear();
@@ -280,6 +313,27 @@ async fn seed_inner(token: &str, temp: &str) -> ModelResult<u64> {
     }
     if !batch.is_empty() {
         write_seed_batch(temp, &batch).await?;
+    }
+    // Feed-only references have no graph node. Their current metadata is the
+    // seed source; live appends/deletes during HSCAN are also in the copied suffix.
+    let mut cursor = 0_u64;
+    loop {
+        let (next, entries): (u64, Vec<(String, String)>) = redis::cmd("HSCAN")
+            .arg(FEED_ONLY_APP_POSTS_KEY)
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(BATCH_SIZE)
+            .query_async(&mut conn)
+            .await
+            .map_err(RedisError::from)?;
+        if !entries.is_empty() {
+            let lines: Vec<_> = entries.into_iter().map(|(_, line)| line).collect();
+            write_seed_batch(temp, &lines).await?;
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
     }
     publish_seed(token, temp, start).await.map_err(Into::into)
 }
@@ -360,6 +414,75 @@ mod tests {
         .unwrap()
     }
 
+    // The nextest live_ rule keeps this global reseed exclusive.
+    #[tokio_shared_rt::test(shared)]
+    async fn live_seed_includes_durable_and_feed_only_app_posts(
+    ) -> Result<(), crate::types::DynError> {
+        use crate::models::app_post::{AppPost, AppPostUri};
+        StackManager::setup(&StackConfig::default()).await?;
+        let author = pubky::Keypair::random().public_key().to_z32();
+        let graph = get_neo4j_graph()?;
+        graph
+            .run(
+                Query::new("app_seed_test_author", "CREATE (:User {id: $author})")
+                    .param("author", author.clone()),
+            )
+            .await?;
+        let durable = AppPostUri::parse(&format!(
+            "pubky://{author}/pub/music/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVG.json"
+        ))
+        .unwrap();
+        let feed_only = AppPostUri::parse(&format!(
+            "pubky://{author}/pub/music/v1/posts/0032SSN7Q4EVJ/0032SSN7Q4EVJ.json"
+        ))
+        .unwrap();
+        let input = durable
+            .read(br#"{"kind":"listen","content":"opaque"}"#)
+            .unwrap();
+        assert!(AppPost::new(&durable, input).put().await?);
+        let durable_line = AppPostChange::new(&durable, "listen".into(), ResourceChangeOp::Put);
+        durable_line.store(false).await?;
+        let only_line = AppPostChange::new(&feed_only, "listening".into(), ResourceChangeOp::Put);
+        only_line.store(true).await?;
+        let (_, before, _) = ResourceChange::get_from_index(0, 0).await?;
+        ResourceChange::reseed().await?;
+        let (_, after, _) = ResourceChange::get_from_index(0, 0).await?;
+        assert_ne!(before, after);
+        let mut own = Vec::new();
+        let mut cursor = 0;
+        loop {
+            let (page, _, _) = ResourceChange::get_from_index(cursor, 1000).await?;
+            if page.lines.is_empty() {
+                break;
+            }
+            cursor = page.next_cursor;
+            own.extend(page.lines.into_iter().filter_map(|line| match line {
+                ReferenceChange::AppPost(line) if line.author == author => Some(line),
+                _ => None,
+            }));
+        }
+        assert_eq!(own, [durable_line, only_line]);
+        assert!(AppPost::get(&feed_only.uri()).await?.is_none());
+        for (post, kind) in [(&durable, "listen"), (&feed_only, "listening")] {
+            AppPostChange::new(post, kind.into(), ResourceChangeOp::Del)
+                .prepare_delete()
+                .await?;
+            AppPost::delete(&post.uri()).await?;
+            AppPostChange::finish_delete(post).await?;
+        }
+        assert!(AppPostChange::feed_only(&feed_only.uri()).await?.is_none());
+        graph
+            .run(
+                Query::new(
+                    "app_seed_test_cleanup",
+                    "MATCH (u:User {id: $author}) DETACH DELETE u",
+                )
+                .param("author", author),
+            )
+            .await?;
+        Ok(())
+    }
+
     #[test]
     fn tag_line_fields_and_object_path() {
         let line = tag("author", "one", 1);
@@ -417,18 +540,18 @@ mod tests {
         deleted.prepare_delete().await?;
         assert_eq!(
             ResourceChange::get_from_index(0, 1000).await?.0.lines,
-            std::slice::from_ref(&first)
+            [ReferenceChange::Resource(first.clone())]
         );
         let tag_uri = format!("pubky://{author}{}", first.object_path);
         // Models an interrupted handler after the graph edge has gone.
         ResourceChange::finish_delete(&author, &tag_uri).await?;
         ResourceChange::finish_delete(&author, &tag_uri).await?;
         let (page, epoch, length) = ResourceChange::get_from_index(0, 1).await?;
-        assert_eq!(page.lines, std::slice::from_ref(&first));
+        assert_eq!(page.lines, [ReferenceChange::Resource(first.clone())]);
         assert_eq!(page.next_cursor, 1);
         assert_eq!(length, 2);
         let next = ResourceChange::get_from_index(page.next_cursor, 1).await?;
-        assert_eq!(next.0.lines, std::slice::from_ref(&deleted));
+        assert_eq!(next.0.lines, [ReferenceChange::Resource(deleted.clone())]);
         assert_eq!(next.0.next_cursor, 2);
         assert_eq!(next.1, epoch);
         assert!(ResourceChange::get_from_index(2, 1000)
@@ -478,10 +601,19 @@ mod tests {
         let (seeded, new_epoch, length) = ResourceChange::get_from_index(0, 1000).await?;
         assert_ne!(new_epoch, epoch);
         assert_eq!(length as usize, seeded.lines.len());
-        assert!(seeded.lines.windows(2).all(|pair| pair[0].at <= pair[1].at));
+        let resource_lines: Vec<_> = seeded
+            .lines
+            .iter()
+            .cloned()
+            .filter_map(ReferenceChange::into_resource)
+            .collect();
+        assert!(resource_lines
+            .windows(2)
+            .all(|pair| pair[0].at <= pair[1].at));
         let own: Vec<_> = seeded
             .lines
             .into_iter()
+            .filter_map(ReferenceChange::into_resource)
             .filter(|line| line.author == author)
             .collect();
         assert_eq!(own, [first.clone(), second]);
@@ -503,7 +635,13 @@ mod tests {
         assert_eq!(publish_seed(&token, &temp, start).await?, 2);
         release_lock(SEED_LOCK, &token).await?;
         let after = ResourceChange::get_from_index(0, 1000).await?;
-        assert_eq!(after.0.lines, [first, deleted]);
+        assert_eq!(
+            after.0.lines,
+            [
+                ReferenceChange::Resource(first),
+                ReferenceChange::Resource(deleted)
+            ]
+        );
         assert_ne!(after.1, before.1);
 
         graph.run(Query::new("cleanup_feed_test", "MATCH (u:User {id: $author}) OPTIONAL MATCH (u)-[:TAGGED]->(r:Resource) DETACH DELETE r, u").param("author", author)).await?;

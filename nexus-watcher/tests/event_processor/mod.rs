@@ -1,3 +1,4 @@
+mod app_posts;
 mod bookmarks;
 mod files;
 mod follows;
