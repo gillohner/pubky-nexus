@@ -4,43 +4,80 @@ Nexus indexes public app posts at
 `/pub/<namespace>/v1/posts/{id}/{editId}[-{slug}].json`. `social` uses the social
 reader and `pubky.app` keeps its legacy route. App examples use `music`
 (`listen`, `listening`, `session`), `maps` (`route`), `events` (`availability`) and
-`marketplace`. The extension hook also accepts unconfigured namespaces. App namespaces are 1–64 ASCII bytes,
+`marketplace`. Unconfigured namespaces work too. Namespaces are 1–64 ASCII bytes,
 start with a lowercase letter, and otherwise contain lowercase letters, digits,
-`.`, `_` or `-`. Kind tokens are 1–32 ASCII bytes, start with a lowercase letter,
-and otherwise contain lowercase letters, digits, `_` or `-`.
+`.`, `_` or `-`. Kind tokens follow the same rule with a 32-byte maximum and no `.`.
 
-App payloads use `pubky-social-specs`' `PostEnvelope<AppKind>` at the pinned v1
-revision. The shared reader validates the envelope, byte and attachment limits,
-references, and timestamp IDs. `AppKind` accepts lowercase tokens and imposes no
-content semantics. `content` is a required string; its contents and unknown fields
-(including `ext`) are never interpreted or stored by Nexus. IDs come from the path;
-the v1 envelope has no required `id` member. Invalid payloads are `SpecValidation`
-errors and are not retried. Private, malformed and versionless storage events do
-not index posts. Slugs are decoration, not identity.
+App payloads use `pubky-social-specs`' `PostEnvelope<AppKind>` from the pinned
+`1.0.0-rc.1` crate. The shared reader validates fields, byte/attachment limits, references
+and timestamp IDs. `AppKind` accepts lowercase tokens without content semantics.
+`content` is a required string; its contents and unknown fields (including `ext`)
+are never interpreted or stored by Nexus. IDs come from the path, not a required
+body member. Invalid payloads fail as non-retryable `SpecValidation`. Private,
+malformed and versionless storage events do not index posts. Slugs are decoration.
 
-## Identity and versions
+## One Resource per URI
 
-A durable post has a separate `AppPost` label, uniquely keyed by its full
-**versionless URI**, for example
-`pubky://<author>/pub/music/v1/posts/<id>`. The same ID in music, maps or a social
-post therefore cannot collide. An `AUTHORED` edge connects the author. Stored
-metadata includes namespace, kind, parent/embed, the original indexed timestamp,
-and `version_uri`, the latest accepted file's address for hydration.
+A durable app post is the **Resource node of its normalized versionless URI**,
+for example `pubky://<author>/pub/music/v1/posts/<id>`. Its `id` is computed with
+nexus-common's `normalize_uri` and `resource_id`, just like any URI. Namespace and
+author are part of the URI, so identical timestamp IDs in different namespaces or
+authors cannot collide. There is no separate `AppPost` graph node.
 
-As for social v1 posts, each accepted version PUT updates the same logical node.
-The last processed event wins, even if an older edit is replayed after a newer one;
-Nexus does not compare edit IDs to an indexed head. The shared reader requires
-`editId >= id` and valid timestamp bounds. **DEL of any version deletes the entire
-logical app post and all its edges**; subsequent version DELs are graph no-ops, but each accepted stored version still
-gets its own feed DEL. Deleting
-an old version is not history pruning. A later PUT can recreate the post.
+An `AUTHORED` edge connects the author. The Resource carries `namespace`, `kind`,
+`post_id` (the path timestamp ID), `author`, `path`, parent/embed references and
+`version_uri` (the last accepted file, including its slug). `app_indexed_at` records
+its first durable app acceptance; the Resource's original `indexed_at` survives
+if a tag or reply created it first. Content, extensions, attachments and lock
+payloads are not stored on it.
+
+Social v1 tags on an app URI use the existing Resource tag path. Social replies
+and app parent/embed references to it merge that same Resource, even before the
+app object is indexed. Later app PUTs add metadata to that node. A reference to an
+app post version in a parent/embed resolves to the logical app URI. Tags retain
+their target URI as usual: explicitly tagging a version file names that file's
+Resource, while tagging the logical post names the versionless Resource.
+
+App parents/embeds use `APP_REPLIED` and `APP_EMBEDDED`; social post targets retain
+their social `Post` nodes. Missing social-post or author dependencies retry without
+partial writes. Other valid URI targets merge Resources without fetching them.
+The envelope's existing reference validation and accepted schemes still apply.
+
+App-origin edges do not contribute to social reply/repost counts or lists, and do
+not generate notifications, mentions or search entries. A social reply to an app
+URI has a `REPLIED` edge to its Resource, exposes the logical URI through
+`relationships.replied`, and enters the author's replies stream. Its stored
+`app_parent` marker preserves reply classification and parent immutability. It
+does not enter root timelines or notify the app parent. No app reply-count or
+reply-list endpoint is provided. Default social streams and social by-ID hydration
+remain scoped to social `Post` nodes.
+
+## Versions and deletion
+
+Each accepted version PUT updates the logical app metadata. As in #1161/N3, the
+last processed event wins, including replay of an older edit; Nexus does not
+compare edit IDs to an indexed head. The shared reader requires valid timestamp
+bounds and `editId >= id`.
+
+**DEL of any version removes the logical app metadata from the index**, its
+`AUTHORED` edge and outgoing app edges, following N3's logical-post deletion rule.
+The underlying URI Resource and incoming tags/replies remain: their writers still
+reference that URI. The post disappears from namespace streams. A later PUT can
+restore its app metadata on the same node. Deleting an old file is therefore not
+merely pruning Nexus's indexed history.
+
+The resource feed reports the actual deleted version file. It does **not** claim
+that other stored versions were deleted. Whole-post deletion requires the source's
+individual version DELs; Nexus emits no synthetic versionless or null-path DEL.
+Consumers can retain other source versions until their DELs arrive, independently
+of Nexus's logical graph policy.
 
 ## Durable and feed-only tiers
 
-Every valid app PUT emits an app-post feed line. Durable kinds also write graph
-metadata. Feed-only kinds write no graph node or Resource edges. `feed_only` is an
-indexing policy: the homeserver file remains available and Pinakes retains the data
-it indexes. Nexus does not impose an expiry or delete the source file.
+Every accepted app PUT and valid stored-version DEL emits a resource reference.
+Durable kinds also write app metadata. A feed-only PUT creates no node or edges.
+`feed_only` is an indexing policy: it neither expires nor deletes the homeserver
+file, and Pinakes retains what it indexes.
 
 ```toml
 [watcher.app_kinds.music]
@@ -48,38 +85,12 @@ feed_only = ["listening"]
 ```
 
 Use `[app_kinds.music]` in a standalone watcher config. `listen` is durable public
-listen history; only `listening` defaults to feed-only. An unconfigured namespace
-has no feed-only kinds. An explicit `app_kinds` map replaces the default map; use
-an empty `feed_only` array to make every kind in a configured namespace durable.
-Operator configuration copies the app spec's tier list. Config changes take effect
-on subsequent events; they do not scan or reclassify existing posts.
-
-A kind edit can move between tiers. Moving to feed-only removes a prior durable
-node and edges; moving to durable creates them. Redis retains metadata for every accepted stored version under
-`Event:AppPostChanges:Versions` until that version is deleted. This covers both
-tiers and supports accurate version DELs and reseeding after the graph node is
-removed. No app content or extensions are cached there.
-
-## Graph relationships and visibility
-
-Durable app parents/embeds link to social posts, durable app posts or normalized
-Resources for other valid URI targets. Missing post/author dependencies retry
-without leaving a partial node. App references to stored versions resolve to the
-logical app URI. The shared envelope's reference rules apply; Nexus does not
-expand its accepted schemes or fetch external targets. A feed-only post cannot
-satisfy a graph post dependency while it has no durable node.
-
-App-origin edges use `APP_REPLIED` and `APP_EMBEDDED`. App posts do not contribute
-to social reply/repost counts or reply lists, and do not generate notifications,
-mentions or search entries. Default social streams and social by-ID hydration
-remain scoped to `Post` nodes.
-
-A social post may reply to a durable app post. It has a `REPLIED` edge to the
-`AppPost`, exposes its logical URI through `relationships.replied`, and appears in
-the social author's replies stream. It does not notify the app parent or enter
-root timelines/engagement streams. A stored `app_parent` marker preserves that
-classification and parent URI if the app node is later removed. Social parent
-immutability still applies. No new app reply-count/list endpoint is provided.
+listen history; only `listening` defaults to feed-only. Unconfigured namespaces
+have no feed-only kinds. An explicit `app_kinds` map replaces the defaults; an
+empty `feed_only` array makes every kind in that namespace durable. Configuration
+changes apply to subsequent events, without scanning or reclassifying old posts.
+A kind edit to feed-only removes prior app metadata and outgoing app edges while
+preserving other writers' Resource references. Returning to durable restores them.
 
 ## Explicit app stream
 
@@ -89,18 +100,19 @@ GET /v0/stream/posts?namespace=music&exclude_kinds=listening,session
 GET /v0/stream/posts?namespace=music&source=author&author_id=<pk>
 ```
 
-Only an explicit app namespace returns durable `AppPost` metadata. Absent,
-`pubky.app` or `social` selects the existing social stream. App selection supports
-`source=all|author`, timeline sorting, ascending/descending order, skip/limit,
-start/end timestamp bounds, an author filter, and mutually exclusive `kind` or
-`exclude_kinds` (up to 32 tokens). Equal timestamps are ordered by full URI.
-Graph-reach sources, engagement sorting, viewer flags, tags, post IDs, and
-attachment hydration are rejected with 400. `/v0/stream/posts/keys` cannot encode
-app identity and rejects app namespaces. Empty app results return `200 []`.
+Only an explicit app namespace selects durable app metadata from Resource nodes.
+Absent, `pubky.app` or `social` selects the existing social stream. App selection
+supports `source=all|author`, timeline sorting, ascending/descending order,
+skip/limit, start/end bounds, author filtering and mutually exclusive `kind` or
+`exclude_kinds` (up to 32 tokens). Equal timestamps sort by full URI. Graph-reach
+sources, engagement sorting, viewer flags, tags, post IDs and attachment hydration
+return 400. `/v0/stream/posts/keys` rejects app namespaces. Empty results are `200 []`.
 
-The metadata's `version_uri` is the source file to fetch. The response contains no
-content, extensions, attachments or lock payload. Feed-only posts have no stream
-entry.
+The response's `id` is the canonical Resource hash; `post_id` is the timestamp ID.
+`indexed_at` is the first app acceptance timestamp. `version_uri` is the source
+file to fetch. No content, extensions, attachment or lock payload is returned.
+The same node is also accessible through normal Resource by-ID/URI hydration and
+its tag routes. Feed-only posts have no app stream entry.
 
 ## Selected social posts
 
@@ -110,78 +122,61 @@ social_kinds = ["event", "rsvp"]
 ```
 
 Use `[post_feed]` in the standalone watcher config. These defaults select public
-`/pub/social/v1/posts/{id}/{editId}.json` posts for the app-post feed too. An
-explicit list replaces the defaults; `[]` disables social feed references.
-Selection affects subsequent events and does not reclassify old versions.
+`/pub/social/v1/posts/{id}/{editId}.json` posts for `kind:post` references on the
+resource feed. An explicit list replaces the defaults; `[]` disables selection.
+Changes apply to subsequent events, without reclassifying historical versions.
 
-The watcher reads the kind with `PostEnvelope<AppKind>` at the unchanged
-`pubky-social-specs` v1 pin `acde362`. Known social kinds retain the pinned
-content validation; other valid lowercase tokens use the catch-all envelope and
-N3's existing `Unknown` storage kind. Social posts still use `Post` nodes, social
-streams, relationships and indexing, independently of feed selection. They never
-become `AppPost` nodes. The line preserves the original token as `post_kind` and
-uses `namespace: "social"`; Pinakes fetches time, venue and other content from the
-stored version. Nexus does not send those fields in the feed. No v1.1 dependency
-or app-specific payload interpretation is added.
+The watcher reads the kind with `PostEnvelope<AppKind>` at the unchanged v1 pin.
+Known social kinds keep their pinned content validation; other valid lowercase
+tokens use the catch-all envelope and N3's `Unknown` storage kind. Social posts
+remain social `Post` nodes with their existing indexing and relationships. The
+feed line names the versionless `/pub/social/v1/posts/{id}` URI and exact version
+file, just like app references. Pinakes fetches the file for its kind, time, venue
+and other content. No v1.1 dependency or app-specific payload interpretation is
+added. Social DELs are emitted for versions previously selected here, including
+older versions after the logical social node is deleted.
 
-## App-post changes feed
+## Resource changes contract — fork extension
 
-`GET /v0/app-posts/changes?cursor=0&limit=500` reads the independent Redis list
-`Event:AppPostChanges`. App posts never enter `Event:ResourceChanges` or
-`GET /v0/resources/changes`; the resource feed retains the #1170 contract.
+`GET /v0/resources/changes?cursor=0&limit=500` reads `Event:ResourceChanges`.
+**`post` is a fork-only reference kind meaning “the object names itself”.** App and
+selected social references use the existing resource line schema:
 
 ```json
-{"op":"put","author":"<pk>","post":"/pub/music/v1/posts/0032SSN7Q4EVG","version":"/pub/music/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ.json","namespace":"music","post_kind":"listen","at":1792980000000}
+{"op":"put","resource_id":"<hash of normalized URI>","uri":"pubky://<author>/pub/music/v1/posts/0032SSN7Q4EVG","kind":"post","author":"<author>","object_path":"/pub/music/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ.json","at":1792980000000}
 ```
 
-`post` is the versionless identity path; the logical replay key is `(author, post)`.
-`version` is the exact stored file path, including a slug when present. Fetch
-`pubky://{author}{version}`; no directory listing is needed. `post_kind` is the
-namespace's vocabulary. `at` is the acceptance/deletion time in Unix milliseconds.
-No content, extension or temporal/venue payload is sent.
+`uri` is the normalized versionless URI; `object_path` is the exact version file,
+including any slug. Fetch `pubky://{author}{object_path}`. `kind` is the reference
+kind, not the namespace-owned content kind. The line contains no namespace,
+post-kind token, content or extension fields. `at` is Unix milliseconds.
 
-Delivery is **at least once, in append order**. PUT upserts the referenced version
-within the logical post's version set; duplicate puts after retries must be
-harmless. On DEL with a non-null `version`, remove only that stored version.
-**`version: null` distinguishes a whole-post DEL**, which removes every version of
-the logical key. PUT always has a non-null version.
+Delivery is **at least once, in append order**. Consumers apply PUT as an upsert
+keyed by **`(author, object_path)`** and DEL as a delete by that same key. The URI
+identifies the logical Resource; multiple stored versions can name it. Duplicates
+after retries are expected and must be harmless. App DELs can repeat and can name
+versions whose PUT was not observed by this indexer.
 
-The #1161/N3 graph policy remains: DEL of any stored version removes the logical
-node. The feed reports the actual storage event, so it does **not** infer that the
-other version files were deleted. N3 receives individual file DELs and does not
-synthesize whole-post DELs. A consumer maintaining source history can retain the
-remaining versions until their DELs arrive, independently of the graph policy.
-Repeated completed DELs are no-ops. DEL of a version never accepted here emits no
-line because its kind is unknown. Pending delete details are saved before graph
-removal; append, removal of the pending record and version metadata removal are
-atomic. A later PUT supersedes an unfinished DEL for that version.
+The graph write precedes append. A retry after graph commit repeats the upsert
+and appends; a retry after append can duplicate the line. Pending deletes are
+saved before graph removal. Append and pending-record cleanup are atomic. The
+same transaction maintains content-free per-version metadata in
+`Event:ResourceChanges:PostVersions`, covering feed-only and selected social
+versions as well as durable app versions. Version metadata survives removal of
+the logical graph metadata until each file's DEL. PUT supersedes an unfinished
+DEL of that version. No cross-database transaction is claimed.
 
-The graph write precedes append for durable posts. A crash after graph commit is
-recovered by retrying the upsert and appending; retry after append may duplicate
-it. No cross-database transaction is claimed.
+Cursor, limit, epoch and seed rules are the resource feed's existing rules: an
+atomic page returns `lines`, `next_cursor`, `x-events-length` and optional
+`x-events-epoch`. Reads never initialize state. Persist epoch and cursor together;
+on epoch change or cursor beyond that response's length, rebuild from cursor 0.
+Retain the prior epoch when absent. Limits are 1–1000 (default 500).
 
-The response is `{ "lines": [...], "next_cursor": n }`. Cursor is a zero-based list
-offset; limit is 1–1000, default 500. Invalid bounds return 400; an empty or exhausted
-feed returns 200 with an empty array of lines and the requested cursor. Reads do
-not initialize keys or fetch resources. `x-events-length` and optional
-`x-events-epoch` come from the same atomic snapshot as the page. Persist cursor and
-epoch together. On epoch change or cursor beyond that response's length, rebuild
-local state from cursor 0. Retain the previous epoch when the header is absent.
-Each feed has its own cursor and epoch; never reuse one feed's cursor on the other.
-
-The `app-post-changes-seed` daemon job snapshots current version metadata and
-recovers durable app and selected social heads from the graph if their append did not complete. It
-then atomically appends the old list's live suffix and publishes a new epoch. A
-lease protects publication; interrupted seeds leave the old generation intact.
-Snapshot duplicates and concurrent suffix duplicates are harmless. Run the job
-after upgrading all writers, and whenever a snapshot rebuild is needed. It does
-not reseed or mutate the resource feed.
-
-Redis persistence is required for prior-version, feed-only and pending-delete
-metadata. After Redis loss, the graph can restore durable app and selected social heads, but historical
-versions and feed-only objects require source replay/re-ingestion. The feed
-records accepted events, not unrelated graph maintenance or profile cascades.
-For an upgrade from a mixed-feed build, check for app lines in the old resource
-list, re-ingest app source versions, and run the two seed jobs separately. Do not
-copy the old five-field app lines: they lack a fetchable version. A resource
-reseed changes its epoch so strict consumers rebuild using resource-only lines.
+`resource-changes-seed` snapshots Resource tags, post version metadata and graph
+fallback for durable app and selected social heads. It then copies the live
+append suffix and atomically publishes a new epoch under the existing lease.
+Snapshot/suffix duplicates are harmless; interrupted seeds retain the old feed.
+Redis persistence is required for historical versions, feed-only versions and
+pending deletes. After Redis loss, graph fallback recovers current durable heads;
+other versions require source replay. The feed records accepted storage events,
+not unrelated graph maintenance or profile cascades.

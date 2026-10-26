@@ -1,4 +1,4 @@
-use crate::utils::{get_request, host_url, invalid_get_request};
+use crate::utils::{get_request, host_url, invalid_get_request, post_request};
 use anyhow::Result;
 use axum::http::StatusCode;
 use nexus_common::db::{get_neo4j_graph, graph::Query};
@@ -61,6 +61,20 @@ async fn namespace_stream_is_explicit_filtered_and_content_free() -> Result<()> 
         .all(|post| post["namespace"] == namespace
             && post.get("content").is_none()
             && post.get("ext").is_none()));
+    for post in posts.as_array().unwrap() {
+        assert_eq!(
+            post["id"],
+            nexus_common::universal_tag::normalize::resource_id(post["uri"].as_str().unwrap())
+        );
+        assert!(post["uri"]
+            .as_str()
+            .unwrap()
+            .ends_with(post["post_id"].as_str().unwrap()));
+        let resource =
+            post_request("/v0/stream/resources/by_ids", json!({"uris":[post["uri"]]})).await?;
+        assert_eq!(resource[0]["details"]["id"], post["id"]);
+        assert_eq!(resource[0]["details"]["uri"], post["uri"]);
+    }
     let listens = get_request(&format!("{endpoint}&kind=listen")).await?;
     assert_eq!(listens.as_array().unwrap().len(), 2);
     let sessions = get_request(&format!("{endpoint}&exclude_kinds=listen&source=author")).await?;

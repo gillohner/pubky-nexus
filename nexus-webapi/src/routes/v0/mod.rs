@@ -2,7 +2,6 @@ use crate::models::{BoundedLimit, BoundedSkip};
 use axum::Router;
 use utoipa::OpenApi;
 
-pub mod app_post_changes;
 pub mod bootstrap;
 pub mod endpoints;
 pub mod events;
@@ -44,8 +43,7 @@ pub fn routes(app_state: AppState) -> (Router<AppState>, Router<AppState>) {
         .merge(notification::routes())
         .merge(bootstrap::routes())
         .merge(events::routes())
-        .merge(resource_changes::routes())
-        .merge(app_post_changes::routes());
+        .merge(resource_changes::routes());
 
     (expensive, default)
 }
@@ -82,7 +80,6 @@ impl ApiDoc {
         combined.merge(notification::NotificationApiDoc::merge_docs());
         combined.merge(events::EventsApiDoc::openapi());
         combined.merge(resource_changes::ResourceChangesApiDoc::openapi());
-        combined.merge(app_post_changes::AppPostChangesApiDoc::openapi());
         combined.merge(ApiDoc::openapi());
 
         combined

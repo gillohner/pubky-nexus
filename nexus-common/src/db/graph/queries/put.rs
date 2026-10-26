@@ -44,11 +44,6 @@ pub fn create_post(
     let mut cypher = String::new();
     let mut new_relationships = Vec::new();
 
-    // A new app reply needs its parent. Edits/tombstones keep their logical parent
-    // even after its AppPost node has been deleted.
-    if post.app_parent.is_some() {
-        cypher.push_str("OPTIONAL MATCH (app_reply_parent:AppPost {uri: $app_parent})\nWITH app_reply_parent\nWHERE app_reply_parent IS NOT NULL OR EXISTS { (:User {id: $author_id})-[:AUTHORED]->(:Post {id: $post_id, app_parent: $app_parent}) }\n");
-    }
     // Check if all the dependencies are consistent in the graph
     if replied.is_some() {
         cypher.push_str("
@@ -90,7 +85,7 @@ pub fn create_post(
     );
 
     if post.app_parent.is_some() {
-        cypher.push_str("FOREACH (_ IN CASE WHEN app_reply_parent IS NULL THEN [] ELSE [1] END | MERGE (new_post)-[:REPLIED]->(app_reply_parent))\n");
+        cypher.push_str("MERGE (app_reply_parent:Resource {id: $app_parent_id}) ON CREATE SET app_reply_parent.uri = $app_parent_uri, app_reply_parent.scheme = $app_parent_scheme, app_reply_parent.indexed_at = $indexed_at\nMERGE (new_post)-[:REPLIED]->(app_reply_parent)\n");
     }
     cypher.push_str("RETURN existing_post IS NOT NULL AS flag");
 
@@ -109,6 +104,18 @@ pub fn create_post(
         .param("lock", post.lock.clone())
         .param("deleted", post.deleted)
         .param("app_parent", post.app_parent.clone());
+
+    if let Some(uri) = &post.app_parent {
+        let (uri, scheme) = crate::universal_tag::normalize::normalize_uri(uri)
+            .map_err(GraphError::QueryBuildError)?;
+        cypher_query = cypher_query
+            .param(
+                "app_parent_id",
+                crate::universal_tag::normalize::resource_id(&uri),
+            )
+            .param("app_parent_uri", uri)
+            .param("app_parent_scheme", scheme);
+    }
 
     if let Some(parent) = replied {
         cypher_query = cypher_query

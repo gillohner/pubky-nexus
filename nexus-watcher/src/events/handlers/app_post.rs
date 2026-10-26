@@ -1,7 +1,7 @@
 use crate::errors::EventProcessorError;
 use nexus_common::config::watcher::AppKindsConfig;
 use nexus_common::models::app_post::{is_post_reference, AppPost, AppPostInput, AppPostUri};
-use nexus_common::models::event::app_post_changes::{AppPostChange, AppPostChangeOp};
+use nexus_common::models::event::resource_changes::{ResourceChange, ResourceChangeOp};
 use std::collections::BTreeMap;
 
 pub async fn put(
@@ -41,23 +41,21 @@ pub async fn sync_put(
         );
         return Err(EventProcessorError::missing_dependencies(dependencies));
     }
-    AppPostChange::from_post(post).store().await?;
+    ResourceChange::post(path, ResourceChangeOp::Put)?
+        .store()
+        .await?;
     Ok(())
 }
 
 pub async fn del(path: &AppPostUri) -> Result<(), EventProcessorError> {
     let uri = path.uri();
-    AppPostChange::prepare_version_delete(path).await?;
-    // Graph fallback is only for the exact version known there (e.g. a crash
-    // before its first append). Never mislabel an old version with the head's kind.
-    if let Some(post) = AppPost::get(&uri).await? {
-        if post.version_uri == path.version_uri() {
-            AppPostChange::new(path, post.kind, AppPostChangeOp::Del)
-                .prepare_delete()
-                .await?;
-        }
-    }
+    // All app versions name their own URI, even if this indexer never saw the PUT.
+    // Persist the exact file DEL before changing graph metadata. Retried DELs are
+    // harmless duplicates under the resource feed's author/object_path contract.
+    ResourceChange::post(path, ResourceChangeOp::Del)?
+        .prepare_delete()
+        .await?;
     AppPost::delete(&uri).await?;
-    AppPostChange::finish_delete(path).await?;
+    ResourceChange::finish_delete(path.author.as_ref(), &path.version_uri()).await?;
     Ok(())
 }

@@ -128,9 +128,6 @@ async fn sync_put_details(
                     ingestor.maybe_ingest_user(&parent.key.owner_id).await,
                 )?;
             }
-            if let Some(uri) = &named.app_replied {
-                dependency_event_keys.push(uri.clone());
-            }
             if dependency_event_keys.is_empty() {
                 dependency_event_keys.push(author_id.to_string());
             }

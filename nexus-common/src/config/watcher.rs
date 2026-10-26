@@ -109,7 +109,7 @@ pub fn default_app_kinds() -> BTreeMap<String, AppKindsConfig> {
     )])
 }
 
-/// Social v1 kinds whose content-free references also enter the app-post feed.
+/// Social v1 kinds whose content-free references enter the resource feed as kind:post.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct PostFeedConfig {

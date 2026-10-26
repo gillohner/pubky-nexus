@@ -167,7 +167,10 @@ impl AppPostUri {
 pub struct AppPost {
     pub uri: String,
     pub version_uri: String,
+    /// Canonical Resource ID, hashed from the normalized versionless URI.
     pub id: String,
+    /// Timestamp ID in the app-owned post path.
+    pub post_id: String,
     pub author: String,
     pub path: String,
     pub namespace: String,
@@ -179,10 +182,12 @@ pub struct AppPost {
 
 impl AppPost {
     pub fn new(path: &AppPostUri, input: AppPostInput) -> Self {
+        let (uri, _) = normalize_uri(&path.uri()).expect("Canonical public post URI");
         Self {
-            uri: path.uri(),
+            id: resource_id(&uri),
+            uri,
             version_uri: path.version_uri(),
-            id: path.id.clone(),
+            post_id: path.id.clone(),
             author: path.author.to_string(),
             path: path.path(),
             namespace: path.namespace.clone(),
@@ -197,9 +202,9 @@ impl AppPost {
         fetch_row_from_graph(
             Query::new(
                 "app_post_get",
-                "MATCH (p:AppPost {uri: $uri}) RETURN p AS post",
+                "MATCH (p:Resource {id: $id}) WHERE p.namespace IS NOT NULL RETURN p{.*, indexed_at: p.app_indexed_at} AS post",
             )
-            .param("uri", uri),
+            .param("id", resource_id(&normalize_uri(uri).map_err(GraphError::QueryBuildError)?.0)),
         )
         .await?
         .map(|row| row.get("post").map_err(Into::into))
@@ -207,7 +212,7 @@ impl AppPost {
     }
 
     /// One transaction replaces the metadata and outgoing edges. Missing Pubky
-    /// post dependencies leave no partial node; the watcher retries those paths.
+    /// social post dependencies leave no partial node; app URIs merge Resources.
     pub async fn put(&self) -> GraphResult<bool> {
         let mut cypher = String::from("MATCH (author:User {id: $author})\n");
         let mut edges = String::new();
@@ -219,15 +224,6 @@ impl AppPost {
             let Some(uri) = uri else { continue };
             let target = reference_target(uri);
             match target {
-                ReferenceTarget::App => {
-                    // Self-references use the node created below.
-                    if uri == &self.uri {
-                        edges.push_str(&format!("MERGE (p)-[:{edge}]->(p)\n"));
-                        continue;
-                    }
-                    cypher.push_str(&format!("MATCH ({name}:AppPost {{uri: ${name}_uri}})\n"));
-                    params.push((format!("{name}_uri"), uri.clone()));
-                }
                 ReferenceTarget::Social { author, id } => {
                     cypher.push_str(&format!("MATCH (:User {{id: ${name}_author}})-[:AUTHORED]->({name}:Post {{id: ${name}_id}})\n"));
                     params.extend([
@@ -250,7 +246,7 @@ impl AppPost {
             }
             edges.push_str(&format!("MERGE (p)-[:{edge}]->({name})\n"));
         }
-        cypher.push_str("MERGE (p:AppPost {uri: $uri}) ON CREATE SET p.indexed_at = $at\nSET p.version_uri = $version_uri, p.id = $id, p.author = $author, p.path = $path, p.namespace = $namespace, p.kind = $kind, p.parent = $parent, p.embed = $embed\nMERGE (author)-[:AUTHORED]->(p)\nWITH *\nCALL (p) { MATCH (p)-[old:APP_REPLIED|APP_EMBEDDED]->() DELETE old }\n");
+        cypher.push_str("MERGE (p:Resource {id: $id}) ON CREATE SET p.uri = $uri, p.scheme = 'pubky', p.indexed_at = $at\nSET p.app_indexed_at = coalesce(p.app_indexed_at, $at), p.version_uri = $version_uri, p.post_id = $post_id, p.author = $author, p.path = $path, p.namespace = $namespace, p.kind = $kind, p.parent = $parent, p.embed = $embed\nMERGE (author)-[:AUTHORED]->(p)\nWITH *\nCALL (p) { MATCH (p)-[old:APP_REPLIED|APP_EMBEDDED]->() DELETE old }\n");
         cypher.push_str(&edges);
         cypher.push_str("RETURN DISTINCT p.uri AS uri");
         let query = Query::new("app_post_put", cypher)
@@ -258,6 +254,7 @@ impl AppPost {
             .param("uri", self.uri.clone())
             .param("version_uri", self.version_uri.clone())
             .param("id", self.id.clone())
+            .param("post_id", self.post_id.clone())
             .param("author", self.author.clone())
             .param("path", self.path.clone())
             .param("namespace", self.namespace.clone())
@@ -273,9 +270,16 @@ impl AppPost {
             .run(
                 Query::new(
                     "app_post_delete",
-                    "MATCH (p:AppPost {uri: $uri}) DETACH DELETE p",
+                    r"MATCH (p:Resource {id: $id}) WHERE p.namespace IS NOT NULL
+                    CALL (p) { MATCH (:User)-[a:AUTHORED]->(p) DELETE a }
+                    CALL (p) { MATCH (p)-[e:APP_REPLIED|APP_EMBEDDED]->() DELETE e }
+                    REMOVE p.version_uri, p.post_id, p.author, p.path, p.namespace,
+                           p.kind, p.app_indexed_at, p.parent, p.embed",
                 )
-                .param("uri", uri),
+                .param(
+                    "id",
+                    resource_id(&normalize_uri(uri).map_err(GraphError::QueryBuildError)?.0),
+                ),
             )
             .await?;
         Ok(())
@@ -295,7 +299,7 @@ impl AppPost {
         } else {
             ("<=", ">=")
         };
-        let query = Query::new("app_post_stream", format!("MATCH (p:AppPost {{namespace: $namespace}}) WHERE ($kind IS NULL OR p.kind = $kind) AND NOT p.kind IN $exclude AND ($author IS NULL OR p.author = $author) AND ($start IS NULL OR p.indexed_at {start_op} $start) AND ($end IS NULL OR p.indexed_at {end_op} $end) RETURN p AS post ORDER BY p.indexed_at {order}, p.uri {order} SKIP $skip LIMIT $limit"))
+        let query = Query::new("app_post_stream", format!("MATCH (p:Resource {{namespace: $namespace}}) WHERE ($kind IS NULL OR p.kind = $kind) AND NOT p.kind IN $exclude AND ($author IS NULL OR p.author = $author) AND ($start IS NULL OR p.app_indexed_at {start_op} $start) AND ($end IS NULL OR p.app_indexed_at {end_op} $end) RETURN p{{.*, indexed_at: p.app_indexed_at}} AS post ORDER BY p.app_indexed_at {order}, p.uri {order} SKIP $skip LIMIT $limit"))
             .param("namespace", namespace).param("kind", kind.map(str::to_owned)).param("exclude", exclude.to_vec())
             .param("author", author.map(str::to_owned)).param("start", pagination.start).param("end", pagination.end)
             .param("skip", pagination.skip.unwrap_or(0) as i64).param("limit", pagination.limit.unwrap_or(10) as i64);
@@ -309,7 +313,6 @@ impl AppPost {
 }
 
 enum ReferenceTarget {
-    App,
     Social { author: String, id: String },
     Resource,
 }
@@ -320,7 +323,7 @@ fn canonical_reference(uri: String) -> String {
 
 fn reference_target(uri: &str) -> ReferenceTarget {
     if AppPostUri::parse(uri).is_some() {
-        return ReferenceTarget::App;
+        return ReferenceTarget::Resource;
     }
     if let Ok(parsed) = legacy_v0::ParsedUri::try_from(uri) {
         if parsed.try_to_uri_str().ok().as_deref() == Some(uri) {

@@ -5,12 +5,15 @@ use nexus_common::db::{
     graph::{GraphError, Query},
 };
 use nexus_common::models::app_post::AppPostUri;
-use nexus_common::models::event::app_post_changes::{AppPostChange, AppPostChangeOp};
+use nexus_common::models::event::resource_changes::{ResourceChange, ResourceChangeOp};
 
 /// Called after the social handler succeeds. Graph metadata lets reseed recover a
 /// selected head after Redis loss or a crash before append. No content is copied.
 pub async fn after_put(path: &AppPostUri, kind: Option<String>) -> Result<(), EventProcessorError> {
-    let line = kind.map(|kind| AppPostChange::new(path, kind, AppPostChangeOp::Put));
+    let line = kind
+        .as_ref()
+        .map(|_| ResourceChange::post(path, ResourceChangeOp::Put))
+        .transpose()?;
     get_neo4j_graph()?
         .run(
             Query::new(
@@ -24,9 +27,9 @@ pub async fn after_put(path: &AppPostUri, kind: Option<String>) -> Result<(), Ev
             .param("id", path.id.clone())
             .param(
                 "version",
-                line.as_ref().and_then(|line| line.version.clone()),
+                line.as_ref().map(|line| line.object_path.clone()),
             )
-            .param("kind", line.as_ref().map(|line| line.post_kind.clone()))
+            .param("kind", kind)
             .param("at", line.as_ref().map(|line| line.at)),
         )
         .await
@@ -38,9 +41,9 @@ pub async fn after_put(path: &AppPostUri, kind: Option<String>) -> Result<(), Ev
 }
 
 pub async fn before_del(path: &AppPostUri) -> Result<(), EventProcessorError> {
-    AppPostChange::prepare_version_delete(path).await?;
+    ResourceChange::prepare_version_delete(path).await?;
     // A graph-only successful PUT may not have populated Redis metadata yet.
-    if let Some(row) = fetch_row_from_graph(
+    if fetch_row_from_graph(
         Query::new(
             "social_post_feed_delete",
             r"
@@ -54,14 +57,11 @@ pub async fn before_del(path: &AppPostUri) -> Result<(), EventProcessorError> {
         .param("version", path.version_path()),
     )
     .await?
+    .is_some()
     {
-        AppPostChange::new(
-            path,
-            row.get("kind").map_err(GraphError::from)?,
-            AppPostChangeOp::Del,
-        )
-        .prepare_delete()
-        .await?;
+        ResourceChange::post(path, ResourceChangeOp::Del)?
+            .prepare_delete()
+            .await?;
     }
     Ok(())
 }
@@ -82,6 +82,6 @@ pub async fn after_del(path: &AppPostUri) -> Result<(), EventProcessorError> {
         )
         .await
         .map_err(GraphError::from)?;
-    AppPostChange::finish_delete(path).await?;
+    ResourceChange::finish_delete(path.author.as_ref(), &path.version_uri()).await?;
     Ok(())
 }
