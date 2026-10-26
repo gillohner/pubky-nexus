@@ -1,35 +1,17 @@
 use crate::errors::EventProcessorError;
-use nexus_common::config::watcher::AppKindsConfig;
 use nexus_common::models::app_post::{is_post_reference, AppPost, AppPostInput, AppPostUri};
 use nexus_common::models::event::resource_changes::{ResourceChange, ResourceChangeOp};
-use std::collections::BTreeMap;
 
-pub async fn put(
-    path: &AppPostUri,
-    bytes: &[u8],
-    kinds: &BTreeMap<String, AppKindsConfig>,
-) -> Result<(), EventProcessorError> {
+pub async fn put(path: &AppPostUri, bytes: &[u8]) -> Result<(), EventProcessorError> {
     let input = path
         .read(bytes)
         .map_err(EventProcessorError::SpecValidation)?;
-    sync_put(path, input, kinds).await
+    sync_put(path, input).await
 }
 
-pub async fn sync_put(
-    path: &AppPostUri,
-    input: AppPostInput,
-    kinds: &BTreeMap<String, AppKindsConfig>,
-) -> Result<(), EventProcessorError> {
-    let feed_only = kinds
-        .get(&path.namespace)
-        .is_some_and(|config| config.feed_only.contains(&input.kind.0));
+pub async fn sync_put(path: &AppPostUri, input: AppPostInput) -> Result<(), EventProcessorError> {
     let post = AppPost::new(path, input);
-    if feed_only {
-        // A kind edit may move a formerly durable object into the feed_only tier.
-        if AppPost::get(&post.uri).await?.is_some() {
-            AppPost::delete(&post.uri).await?;
-        }
-    } else if !post.put().await? {
+    if !post.put().await? {
         let mut dependencies = vec![pubky_social_specs::legacy_v0::user_uri_builder(
             post.author.clone(),
         )];

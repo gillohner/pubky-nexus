@@ -26,7 +26,7 @@ async fn post_and_tag_references_share_cursor_epoch_and_schema() -> Result<()> {
     );
     let author = "emq37ky6fbnaun7q1ris6rx3mqmw3a33so1txfesg9jj3ak9ryoy";
     let parsed = AppPostUri::parse(&format!(
-        "pubky://{author}/pub/maps/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ-route.json"
+        "pubky://{author}/pub/example/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ-note.json"
     ))
     .unwrap();
     let post = ResourceChange::post(&parsed, ResourceChangeOp::Put)?;
@@ -35,8 +35,8 @@ async fn post_and_tag_references_share_cursor_epoch_and_schema() -> Result<()> {
         post.resource_id.clone(),
         post.uri.clone(),
         author.into(),
-        "route".into(),
-        &format!("pubky://{author}/pub/maps/tags/one"),
+        "note".into(),
+        &format!("pubky://{author}/pub/example/tags/one"),
         post.at,
     )?;
     tag.store().await?;
@@ -45,7 +45,9 @@ async fn post_and_tag_references_share_cursor_epoch_and_schema() -> Result<()> {
     let epoch = first.header("x-events-epoch");
     assert_eq!(first.json_body()?["lines"][0], serde_json::to_value(&tag)?);
     post.store().await?;
-    ResourceChange::prepare_version_delete(&parsed).await?;
+    ResourceChange::post(&parsed, ResourceChangeOp::Del)?
+        .prepare_delete()
+        .await?;
     ResourceChange::finish_delete(author, &parsed.version_uri()).await?;
     let page = client
         .do_get(&format!("{endpoint}?cursor=1&limit=2"))

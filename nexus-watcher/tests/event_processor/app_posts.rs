@@ -1,7 +1,6 @@
 use super::posts::utils::{short_post, test_user};
 use super::utils::watcher::{generate_post_id, retrieve_and_handle_event_line, WatcherTest};
 use anyhow::Result;
-use nexus_common::config::watcher::default_app_kinds;
 use nexus_common::db::{fetch_row_from_graph, graph::Query};
 use nexus_common::models::app_post::{AppPost, AppPostUri};
 use nexus_common::models::event::resource_changes::{
@@ -45,20 +44,20 @@ async fn setup() -> Result<(WatcherTest, Keypair, String)> {
 }
 
 #[tokio_shared_rt::test(shared)]
-async fn durable_put_edges_edit_and_del() -> Result<()> {
+async fn put_edges_edit_and_del() -> Result<()> {
     let (mut test, key, author) = setup().await?;
     let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
     let id = generate_post_id();
-    let path: ResourcePath = format!("/pub/music/v1/posts/{id}/{id}.json").parse()?;
+    let path: ResourcePath = format!("/pub/example/v1/posts/{id}/{id}.json").parse()?;
     let version_uri = format!("pubky://{author}{path}");
     let uri = AppPostUri::parse(&version_uri).unwrap().uri();
-    let mut body = envelope(&id, "listen");
+    let mut body = envelope(&id, "note");
     body["parent"] = json!(format!("pubky://{author}/pub/album/catalog.json"));
     body["embed"] = json!("https://example.com/album");
     test.put(&key, &path, &body).await?;
-    let post = AppPost::get(&uri).await?.expect("durable app post");
-    assert_eq!(post.namespace, "music");
-    assert_eq!(post.kind, "listen");
+    let post = AppPost::get(&uri).await?.expect("indexed app post");
+    assert_eq!(post.namespace, "example");
+    assert_eq!(post.kind, "note");
     assert_eq!(post.post_id, id);
     assert_eq!(
         post.id,
@@ -78,10 +77,10 @@ async fn durable_put_edges_edit_and_del() -> Result<()> {
 
     body["parent"] = Value::Null;
     body["embed"] = Value::Null;
-    body["kind"] = json!("session");
+    body["kind"] = json!("article");
     let edit = generate_post_id();
     let edited_path: ResourcePath =
-        format!("/pub/music/v1/posts/{id}/{edit}-listen.json").parse()?;
+        format!("/pub/example/v1/posts/{id}/{edit}-note.json").parse()?;
     test.put(&key, &edited_path, &body).await?;
     assert_eq!(
         AppPost::get(&uri).await?.unwrap().version_uri,
@@ -109,31 +108,32 @@ async fn durable_put_edges_edit_and_del() -> Result<()> {
     Ok(())
 }
 
+// Regression for the formerly special-cased music/listening payload: it now
+// follows exactly the same graph and reference behavior as any app envelope.
 #[tokio_shared_rt::test(shared)]
-async fn music_listening_is_feed_only_but_listen_history_is_durable() -> Result<()> {
+async fn every_accepted_app_kind_gets_resource_and_reference() -> Result<()> {
     let (mut test, key, author) = setup().await?;
     let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
-    for kind in ["listening", "listen"] {
+    for (namespace, kind) in [("example", "note"), ("music", "listening")] {
         let id = generate_post_id();
-        let path: ResourcePath = format!("/pub/music/v1/posts/{id}/{id}.json").parse()?;
-        let uri = format!("pubky://{author}/pub/music/v1/posts/{id}");
-        test.put(&key, &path, &envelope(&id, kind)).await?;
-        assert_eq!(AppPost::get(&uri).await?.is_some(), kind == "listen");
-        let parsed = AppPostUri::parse(&format!("pubky://{author}{path}")).unwrap();
-        assert!(ResourceChange::version_record(&parsed).await?.is_some());
-        if kind == "listening" {
-            let row = fetch_row_from_graph(
-                Query::new(
-                    "test_feed_only_no_resource",
-                    "MATCH (r:Resource {uri: $uri}) RETURN count(r) AS nodes",
-                )
-                .param("uri", uri.clone()),
-            )
-            .await?
-            .unwrap();
-            assert_eq!(row.get::<i64>("nodes")?, 0);
+        let path: ResourcePath = format!("/pub/{namespace}/v1/posts/{id}/{id}.json").parse()?;
+        let uri = format!("pubky://{author}/pub/{namespace}/v1/posts/{id}");
+        let mut body = envelope(&id, kind);
+        body["parent"] = json!("https://example.com/parent");
+        body["embed"] = json!("https://example.com/embed");
+        test.put(&key, &path, &body).await?;
+        let post = AppPost::get(&uri).await?.expect("every kind is indexed");
+        assert_eq!(post.namespace, namespace);
+        assert_eq!(post.kind, kind);
+        let row = fetch_row_from_graph(Query::new("test_generic_app_edges", "MATCH (r:Resource {uri: $uri}) RETURN COUNT { (:Resource {uri: $uri}) } AS nodes, COUNT { (:User {id: $author})-[:AUTHORED]->(r) } AS authors, COUNT { (r)-[:APP_REPLIED]->(:Resource) } AS parents, COUNT { (r)-[:APP_EMBEDDED]->(:Resource) } AS embeds").param("uri", uri.clone()).param("author", author.clone())).await?.unwrap();
+        for count in ["nodes", "authors", "parents", "embeds"] {
+            assert_eq!(row.get::<i64>(count)?, 1, "{namespace}/{kind}: {count}");
         }
-        // Feed-only is an indexing tier, not a homeserver deletion or TTL.
+        let parsed = AppPostUri::parse(&format!("pubky://{author}{path}")).unwrap();
+        let record = ResourceChange::version_record(&parsed).await?.unwrap();
+        assert_eq!(record.uri, uri);
+        assert_eq!(record.resource_id, post.id);
+        assert_eq!(record.kind, ResourceChangeKind::Post);
         test.del(&key, &path).await?;
         assert!(AppPost::get(&uri).await?.is_none());
         assert!(ResourceChange::version_record(&parsed).await?.is_none());
@@ -153,15 +153,20 @@ async fn music_listening_is_feed_only_but_listen_history_is_durable() -> Result<
 }
 
 #[tokio_shared_rt::test(shared)]
-async fn unknown_namespace_is_durable_and_identity_includes_namespace() -> Result<()> {
+async fn arbitrary_namespaces_are_indexed_and_identity_includes_namespace() -> Result<()> {
     let (mut test, key, author) = setup().await?;
     let id = generate_post_id();
     let social_path: ResourcePath = format!("/pub/pubky.app/posts/{id}").parse()?;
     let social = short_post("social collision control");
     test.put(&key, &social_path, &social).await?;
-    for namespace in ["new.app", "marketplace"] {
+    for namespace in [
+        "x",
+        "new-app2",
+        "other-example",
+        "abcdefghijklmnopqrstuvwxyz012345",
+    ] {
         let path: ResourcePath = format!("/pub/{namespace}/v1/posts/{id}/{id}.json").parse()?;
-        test.put(&key, &path, &envelope(&id, "listen")).await?;
+        test.put(&key, &path, &envelope(&id, "note")).await?;
         assert_eq!(
             AppPost::get(&format!("pubky://{author}/pub/{namespace}/v1/posts/{id}"))
                 .await?
@@ -174,7 +179,12 @@ async fn unknown_namespace_is_durable_and_identity_includes_namespace() -> Resul
         PostDetails::get_by_id(&author, &id).await?.unwrap().content,
         social.content
     );
-    for namespace in ["new.app", "marketplace"] {
+    for namespace in [
+        "x",
+        "new-app2",
+        "other-example",
+        "abcdefghijklmnopqrstuvwxyz012345",
+    ] {
         test.del(
             &key,
             &format!("/pub/{namespace}/v1/posts/{id}/{id}.json").parse()?,
@@ -193,12 +203,12 @@ async fn invalid_envelope_is_spec_validation_without_feed_or_node() -> Result<()
     let mut test = test.remove_event_processing().await;
     let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
     let id = generate_post_id();
-    let path: ResourcePath = format!("/pub/maps/v1/posts/{id}/{id}.json").parse()?;
+    let path: ResourcePath = format!("/pub/example/v1/posts/{id}/{id}.json").parse()?;
     let version_uri = format!("pubky://{author}{path}");
     let uri = AppPostUri::parse(&version_uri).unwrap().uri();
     let mut cases = vec![
         json!({}),
-        json!({"kind":"route", "content":null}),
+        json!({"kind":"note", "content":null}),
         envelope(&id, "UPPER"),
     ];
     for (field, value) in [
@@ -207,7 +217,7 @@ async fn invalid_envelope_is_spec_validation_without_feed_or_node() -> Result<()
         ("embed", json!({"uri":"https://example.com"})),
         ("attachments", Value::Null),
     ] {
-        let mut body = envelope(&id, "route");
+        let mut body = envelope(&id, "note");
         body[field] = value;
         cases.push(body);
     }
@@ -241,13 +251,13 @@ async fn invalid_envelope_is_spec_validation_without_feed_or_node() -> Result<()
 async fn social_reply_to_app_post_and_app_parent_edges() -> Result<()> {
     let (mut test, key, author) = setup().await?;
     let id = generate_post_id();
-    let path: ResourcePath = format!("/pub/maps/v1/posts/{id}/{id}.json").parse()?;
+    let path: ResourcePath = format!("/pub/example/v1/posts/{id}/{id}.json").parse()?;
     let version_uri = format!("pubky://{author}{path}");
     let uri = AppPostUri::parse(&version_uri).unwrap().uri();
-    test.put(&key, &path, &envelope(&id, "route")).await?;
+    test.put(&key, &path, &envelope(&id, "note")).await?;
     let reply_id = generate_post_id();
     let reply_path: ResourcePath = format!("/pub/pubky.app/posts/{reply_id}").parse()?;
-    let mut reply = short_post("Social reply to an app route");
+    let mut reply = short_post("Social reply to an app post");
     reply.parent = Some(uri.clone());
     test.put(&key, &reply_path, &reply).await?;
     assert_eq!(
@@ -262,12 +272,12 @@ async fn social_reply_to_app_post_and_app_parent_edges() -> Result<()> {
     assert_eq!(row.get::<String>("parent")?, uri);
     let child_id = generate_post_id();
     let child_path: ResourcePath =
-        format!("/pub/events/v1/posts/{child_id}/{child_id}.json").parse()?;
-    let mut child = envelope(&child_id, "availability");
+        format!("/pub/other-example/v1/posts/{child_id}/{child_id}.json").parse()?;
+    let mut child = envelope(&child_id, "note");
     child["parent"] = json!(uri);
     child["embed"] = json!(post_uri_builder(author.clone(), reply_id.clone()));
     test.put(&key, &child_path, &child).await?;
-    let row = fetch_row_from_graph(Query::new("test_cross_app_edges", "MATCH (p:Resource {uri: $uri}) RETURN COUNT { (p)-[:APP_REPLIED]->(:Resource) } AS parents, COUNT { (p)-[:APP_EMBEDDED]->(:Post) } AS embeds").param("uri", format!("pubky://{author}/pub/events/v1/posts/{child_id}"))).await?.unwrap();
+    let row = fetch_row_from_graph(Query::new("test_cross_app_edges", "MATCH (p:Resource {uri: $uri}) RETURN COUNT { (p)-[:APP_REPLIED]->(:Resource) } AS parents, COUNT { (p)-[:APP_EMBEDDED]->(:Post) } AS embeds").param("uri", format!("pubky://{author}/pub/other-example/v1/posts/{child_id}"))).await?.unwrap();
     assert_eq!(row.get::<i64>("parents")?, 1);
     assert_eq!(row.get::<i64>("embeds")?, 1);
     let v1_reply_id = generate_post_id();
@@ -372,15 +382,15 @@ async fn graph_commit_retry_and_pending_delete_recovery() -> Result<()> {
     let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
     let id = generate_post_id();
     let path = AppPostUri::parse(&format!(
-        "pubky://{author}/pub/music/v1/posts/{id}/{id}.json"
+        "pubky://{author}/pub/example/v1/posts/{id}/{id}.json"
     ))
     .unwrap();
-    let bytes = serde_json::to_vec(&envelope(&id, "session"))?;
+    let bytes = serde_json::to_vec(&envelope(&id, "article"))?;
     let post = AppPost::new(&path, path.read(&bytes).unwrap());
     assert!(post.put().await?); // crash boundary: graph committed, feed not appended
     assert!(own_lines(&author, cursor).await?.is_empty());
-    app_post::put(&path, &bytes, &default_app_kinds()).await?;
-    app_post::put(&path, &bytes, &default_app_kinds()).await?;
+    app_post::put(&path, &bytes).await?;
+    app_post::put(&path, &bytes).await?;
     let lines = own_lines(&author, cursor).await?;
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0].uri, lines[1].uri);
@@ -406,174 +416,85 @@ async fn graph_commit_retry_and_pending_delete_recovery() -> Result<()> {
 }
 
 #[tokio_shared_rt::test(shared)]
-async fn kind_edits_and_operator_config_change_the_tier_without_stale_metadata() -> Result<()> {
+async fn kind_edits_update_metadata_and_edges_on_the_same_resource() -> Result<()> {
     let (mut test, key, author) = setup().await?;
+    let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
     let id = generate_post_id();
     let path = AppPostUri::parse(&format!(
-        "pubky://{author}/pub/music/v1/posts/{id}/{id}.json"
+        "pubky://{author}/pub/example/v1/posts/{id}/{id}.json"
     ))
     .unwrap();
-    let defaults = default_app_kinds();
-    for kind in ["listen", "listening", "session"] {
-        let body = serde_json::to_vec(&envelope(&id, kind))?;
-        app_post::put(&path, &body, &defaults).await?;
-        assert_eq!(
-            AppPost::get(&path.uri()).await?.is_some(),
-            kind != "listening"
-        );
+    let mut original = None;
+    for (index, kind) in ["note", "memo", "article"].into_iter().enumerate() {
+        let parent = format!("https://example.com/parent/{index}");
+        let mut body = envelope(&id, kind);
+        body["parent"] = json!(parent);
+        if index == 0 {
+            body["embed"] = json!("https://example.com/first");
+        }
+        app_post::put(&path, &serde_json::to_vec(&body)?).await?;
+        let post = AppPost::get(&path.uri()).await?.unwrap();
+        assert_eq!(post.kind, kind);
+        assert_eq!(post.parent.as_deref(), Some(parent.as_str()));
+        let identity = (post.id, post.indexed_at);
+        assert_eq!(original.get_or_insert(identity.clone()), &identity);
+        let row = fetch_row_from_graph(Query::new("test_kind_edit_edges", "MATCH (r:Resource {uri: $uri}) RETURN COUNT { (:User)-[:AUTHORED]->(r) } AS authors, COUNT { (r)-[:APP_REPLIED]->() } AS parents, COUNT { (r)-[:APP_REPLIED]->(:Resource {uri: $parent}) } AS current_parent, COUNT { (r)-[:APP_EMBEDDED]->() } AS embeds").param("uri", path.uri()).param("parent", parent)).await?.unwrap();
+        assert_eq!(row.get::<i64>("authors")?, 1);
+        assert_eq!(row.get::<i64>("parents")?, 1);
+        assert_eq!(row.get::<i64>("current_parent")?, 1);
+        assert_eq!(row.get::<i64>("embeds")?, i64::from(index == 0));
         assert_eq!(
             ResourceChange::version_record(&path).await?.unwrap().kind,
             ResourceChangeKind::Post
         );
     }
-    let configured = std::collections::BTreeMap::from([(
-        "music".into(),
-        nexus_common::config::watcher::AppKindsConfig {
-            feed_only: vec!["session".into()],
-        },
-    )]);
-    app_post::put(
-        &path,
-        &serde_json::to_vec(&envelope(&id, "session"))?,
-        &configured,
-    )
-    .await?;
-    assert!(AppPost::get(&path.uri()).await?.is_none());
-    assert!(ResourceChange::version_record(&path).await?.is_some());
+    let lines = own_lines(&author, cursor).await?;
+    assert_eq!(lines.len(), 3);
+    assert!(lines
+        .iter()
+        .all(|line| line.op == ResourceChangeOp::Put && line.uri == path.uri()));
     app_post::del(&path).await?;
+    assert!(AppPost::get(&path.uri()).await?.is_none());
     assert!(ResourceChange::version_record(&path).await?.is_none());
     test.cleanup_user(&key).await?;
     Ok(())
 }
 
 #[tokio_shared_rt::test(shared)]
-async fn selected_social_kinds_stay_social_and_emit_version_references() -> Result<()> {
+async fn social_put_edit_retry_and_del_do_not_emit_resource_post_lines() -> Result<()> {
     let (mut test, key, author) = setup().await?;
     let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
-    let mut paths = Vec::new();
     for kind in ["event", "rsvp", "note"] {
         let id = generate_post_id();
         let path: ResourcePath = format!("/pub/social/v1/posts/{id}/{id}.json").parse()?;
-        let body = json!({"kind":kind, "content":"{opaque event/venue data}", "ext":{"secret":"not in line"}});
-        test.put(&key, &path, &body).await?;
-        let social = PostDetails::get_by_id(&author, &id)
-            .await?
-            .expect("still indexed as social");
-        assert_eq!(social.content, body["content"].as_str().unwrap());
-        assert!(
-            AppPost::get(&format!("pubky://{author}/pub/social/v1/posts/{id}"))
-                .await?
-                .is_none()
-        );
-        paths.push((path, id));
-    }
-    let lines = own_lines(&author, cursor).await?;
-    assert_eq!(lines.len(), 2);
-    for index in 0..2 {
-        assert_eq!(lines[index].kind, ResourceChangeKind::Post);
-        assert_eq!(
-            lines[index].object_path.as_str(),
-            paths[index].0.to_string().as_str()
-        );
-        assert_eq!(
-            lines[index].uri,
-            format!("pubky://{author}/pub/social/v1/posts/{}", paths[index].1)
-        );
-        let json = serde_json::to_value(&lines[index])?;
-        assert_eq!(json.as_object().unwrap().len(), 7);
-        assert!(json.get("content").is_none());
-        assert!(json.get("ext").is_none());
-    }
-    for (path, _) in paths {
-        test.del(&key, &path).await?;
-    }
-    let lines = own_lines(&author, cursor).await?;
-    assert_eq!(lines.len(), 4);
-    assert_eq!(lines[2].op, ResourceChangeOp::Del);
-    assert_eq!(lines[3].kind, ResourceChangeKind::Post);
-    test.cleanup_user(&key).await?;
-    Ok(())
-}
-
-#[tokio_shared_rt::test(shared)]
-async fn social_kind_selection_and_graph_commit_retry() -> Result<()> {
-    use nexus_common::config::watcher::PostFeedConfig;
-    use nexus_watcher::events::{DefaultEventHandler, Event, EventHandler, ParseResult};
-    use std::sync::Arc;
-    let (test, key, author) = setup().await?;
-    let mut test = test.remove_event_processing().await;
-    let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
-    let mut config = nexus_common::WatcherConfig {
-        post_feed: PostFeedConfig {
-            social_kinds: vec![],
-        },
-        ..Default::default()
-    };
-    let client = test.event_processor_runner.client.clone();
-    let disabled = DefaultEventHandler::from_config(&config, client.clone());
-    let id = generate_post_id();
-    let path: ResourcePath = format!("/pub/social/v1/posts/{id}/{id}.json").parse()?;
-    let uri = format!("pubky://{author}{path}");
-    test.put(&key, &path, &envelope(&id, "event")).await?;
-    let ParseResult::Parsed(event) = Event::parse_event(&format!("PUT {uri}"))? else {
-        panic!("parsed");
-    };
-    disabled.handle(&event).await?;
-    assert!(PostDetails::get_by_id(&author, &id).await?.is_some());
-    assert!(own_lines(&author, cursor).await?.is_empty());
-    // Models graph commit without append. The default handler must append on retry
-    // even though the social node already exists and its content is unchanged.
-    let enabled = Arc::new(DefaultEventHandler::from_config(
-        &nexus_common::WatcherConfig::default(),
-        client.clone(),
-    ));
-    enabled.handle(&event).await?;
-    enabled.handle(&event).await?;
-    let lines = own_lines(&author, cursor).await?;
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0].uri, lines[1].uri);
-    assert_eq!(lines[0].object_path, lines[1].object_path);
-    let parsed = AppPostUri::parse_social(&uri).unwrap();
-    nexus_watcher::events::handlers::post_feed::before_del(&parsed).await?;
-    // Simulate interrupted delete after graph/cache removal but before append.
-    let ingestor = nexus_common::utils::test_utils::default_ingestor_tests();
-    nexus_watcher::events::handlers::post::del(
-        nexus_watcher::events::inputs::ResourceKey {
-            owner_id: parsed.author.clone(),
-            resource_id: id.clone(),
-        },
-        &ingestor,
-    )
-    .await?;
-    retrieve_and_handle_event_line(&format!("DEL {uri}"), enabled.clone()).await?;
-    retrieve_and_handle_event_line(&format!("DEL {uri}"), enabled.clone()).await?;
-    assert_eq!(own_lines(&author, cursor).await?.len(), 3);
-    assert!(ResourceChange::version_record(&parsed).await?.is_none());
-    test.del(&key, &path).await?;
-    // Explicit selection replaces the defaults, without changing social indexing.
-    config.post_feed.social_kinds = vec!["note".into()];
-    let selected = Arc::new(DefaultEventHandler::from_config(&config, client));
-    for kind in ["note", "rsvp"] {
-        let id = generate_post_id();
-        let path: ResourcePath = format!("/pub/social/v1/posts/{id}/{id}.json").parse()?;
         test.put(&key, &path, &envelope(&id, kind)).await?;
-        retrieve_and_handle_event_line(&format!("PUT pubky://{author}{path}"), selected.clone())
-            .await?;
-        assert!(PostDetails::get_by_id(&author, &id).await?.is_some());
+        let edit = generate_post_id();
+        let edited: ResourcePath = format!("/pub/social/v1/posts/{id}/{edit}.json").parse()?;
+        let mut body = envelope(&id, kind);
+        body["content"] = json!("Updated social post");
+        test.put(&key, &edited, &body).await?;
+        retrieve_and_handle_event_line(
+            &format!("PUT pubky://{author}{edited}"),
+            test.event_processor_runner.event_handler.clone(),
+        )
+        .await?;
+        assert_eq!(
+            PostDetails::get_by_id(&author, &id).await?.unwrap().content,
+            "Updated social post"
+        );
+        let parsed = AppPostUri::parse_social(&format!("pubky://{author}{edited}")).unwrap();
+        assert!(ResourceChange::version_record(&parsed).await?.is_none());
+        assert!(own_lines(&author, cursor).await?.is_empty());
+        test.del(&key, &edited).await?;
         test.del(&key, &path).await?;
-        retrieve_and_handle_event_line(&format!("DEL pubky://{author}{path}"), selected.clone())
-            .await?;
+        assert!(own_lines(&author, cursor).await?.is_empty());
     }
-    let lines = own_lines(&author, cursor).await?;
-    assert_eq!(lines.len(), 5);
-    assert_eq!(lines[3].kind, ResourceChangeKind::Post);
-    assert_eq!(lines[4].op, ResourceChangeOp::Del);
     test.cleanup_user(&key).await?;
     Ok(())
 }
 
 /// A tag or reply may arrive before the app's own object. All three must share
-/// the generic URI Resource, including after tier changes and version deletion.
+/// the generic URI Resource, including after kind edits and version deletion.
 #[tokio_shared_rt::test(shared)]
 async fn tags_replies_and_app_metadata_share_one_resource() -> Result<()> {
     use nexus_common::models::resource::view::ResourceView;
@@ -593,13 +514,13 @@ async fn tags_replies_and_app_metadata_share_one_resource() -> Result<()> {
     // Exercise both arrival orders, including a pre-existing generic Resource.
     for app_first in [false, true] {
         let id = generate_post_id();
-        let path: ResourcePath = format!("/pub/music/v1/posts/{id}/{id}.json").parse()?;
-        let uri = format!("pubky://{author}/pub/music/v1/posts/{id}");
+        let path: ResourcePath = format!("/pub/example/v1/posts/{id}/{id}.json").parse()?;
+        let uri = format!("pubky://{author}/pub/example/v1/posts/{id}");
         let resource_id = resource_id(&normalize_uri(&uri).unwrap().0);
         if app_first {
-            test.put(&key, &path, &envelope(&id, "listen")).await?;
+            test.put(&key, &path, &envelope(&id, "note")).await?;
         }
-        let tag = PubkySocialTag::new(uri.clone(), "app-route".into());
+        let tag = PubkySocialTag::new(uri.clone(), "app-reference".into());
         let tag_path: ResourcePath = PubkySocialTag::create_path(&tag.create_id()).parse()?;
         test.put(&tagger_key, &tag_path, &tag).await?;
         let before = fetch_row_from_graph(
@@ -618,7 +539,7 @@ async fn tags_replies_and_app_metadata_share_one_resource() -> Result<()> {
         let mut reply = short_post("Reply to any app URI, before or after its PUT");
         reply.parent = Some(uri.clone());
         test.put(&tagger_key, &reply_path, &reply).await?;
-        test.put(&key, &path, &envelope(&id, "listen")).await?;
+        test.put(&key, &path, &envelope(&id, "note")).await?;
         let app = AppPost::get(&uri).await?.unwrap();
         assert_eq!(app.id, resource_id);
         assert_eq!(app.post_id, id);
@@ -626,15 +547,15 @@ async fn tags_replies_and_app_metadata_share_one_resource() -> Result<()> {
         test.del(&tagger_key, &tag_path).await?;
         assert_eq!(AppPost::get(&uri).await?.unwrap().id, resource_id);
         test.put(&tagger_key, &tag_path, &tag).await?;
-        for kind in ["listening", "session"] {
+        for kind in ["memo", "article"] {
             test.put(&key, &path, &envelope(&id, kind)).await?;
-            assert_eq!(AppPost::get(&uri).await?.is_some(), kind == "session");
+            assert_eq!(AppPost::get(&uri).await?.unwrap().kind, kind);
             let row = fetch_row_from_graph(Query::new("shared_resource_check", "MATCH (r:Resource {id: $id}) RETURN elementId(r) AS element, r.indexed_at AS at, COUNT { (:User)-[:TAGGED]->(r) } AS tags, COUNT { (:Post)-[:REPLIED]->(r) } AS replies, COUNT { (:User)-[:AUTHORED]->(r) } AS authors").param("id", resource_id.clone())).await?.unwrap();
             assert_eq!(row.get::<String>("element")?, element);
             assert_eq!(row.get::<i64>("at")?, indexed_at);
             assert_eq!(row.get::<i64>("tags")?, 1);
             assert_eq!(row.get::<i64>("replies")?, 1);
-            assert_eq!(row.get::<i64>("authors")?, i64::from(kind == "session"));
+            assert_eq!(row.get::<i64>("authors")?, 1);
         }
         test.del(&key, &path).await?;
         assert!(AppPost::get(&uri).await?.is_none());
@@ -651,7 +572,7 @@ async fn tags_replies_and_app_metadata_share_one_resource() -> Result<()> {
         test.del(&tagger_key, &tag_path).await?;
         test.del(&tagger_key, &reply_path).await?;
     }
-    TagSearch::del_from_index("app-route").await?;
+    TagSearch::del_from_index("app-reference").await?;
     test.cleanup_user(&tagger_key).await?;
     test.cleanup_user(&key).await?;
     Ok(())

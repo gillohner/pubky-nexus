@@ -3,7 +3,6 @@ pub mod bookmark;
 pub mod file;
 pub mod follow;
 pub mod post;
-pub mod post_feed;
 pub mod tag;
 pub mod user;
 pub mod utils;

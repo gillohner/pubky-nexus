@@ -14,12 +14,10 @@ pub use target::EventTarget;
 use crate::errors::EventProcessorError;
 use crate::homeserver::HomeserverClient;
 use crate::METER_NAME;
-use nexus_common::config::watcher::{default_app_kinds, AppKindsConfig, PostFeedConfig};
 use nexus_common::models::takedown::is_taken_down;
 use nexus_common::WatcherConfig;
 use opentelemetry::{global, metrics::Counter};
 use pubky::PubkyResource;
-use std::collections::BTreeMap;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
@@ -59,8 +57,6 @@ pub struct DefaultEventHandler {
 
     /// Local files directory on Nexus used for file-backed events.
     files_path: PathBuf,
-    app_kinds: BTreeMap<String, AppKindsConfig>,
-    post_feed: PostFeedConfig,
 }
 
 impl DefaultEventHandler {
@@ -75,8 +71,6 @@ impl DefaultEventHandler {
             ingestor,
             client,
             files_path,
-            app_kinds: default_app_kinds(),
-            post_feed: PostFeedConfig::default(),
         }
     }
 
@@ -85,15 +79,12 @@ impl DefaultEventHandler {
     /// `client` too.
     pub fn from_config(config: &WatcherConfig, client: Arc<dyn HomeserverClient>) -> Self {
         let ingestor = UserIngestor::from_config(&config.stack, client.clone());
-        let mut handler = Self::new(
+        Self::new(
             Moderation::from_config(config),
             Arc::new(ingestor),
             client,
             config.stack.files_path.clone(),
-        );
-        handler.app_kinds = config.app_kinds.clone();
-        handler.post_feed = config.post_feed.clone();
-        handler
+        )
     }
 }
 
@@ -108,8 +99,6 @@ impl EventHandler for DefaultEventHandler {
                     self.moderation.clone(),
                     self.ingestor.clone(),
                     self.client.as_ref(),
-                    &self.app_kinds,
-                    &self.post_feed,
                 )
                 .await
             }
@@ -131,8 +120,6 @@ pub async fn handle_put_event(
     moderation: Arc<Moderation>,
     ingestor: Arc<UserIngestor>,
     client: &dyn HomeserverClient,
-    app_kinds: &BTreeMap<String, AppKindsConfig>,
-    post_feed: &PostFeedConfig,
 ) -> Result<(), EventProcessorError> {
     // Whatever order events arrive in, a record the moderator took down stays down. A
     // copy left behind by an earlier attempt whose removal failed is removed here too.
@@ -146,25 +133,9 @@ pub async fn handle_put_event(
     let blob = client.get_resource(&pubky_resource).await?;
 
     let outcome = match translate_put(&event.uri, &event.target, &blob)? {
-        TranslatedPut::AppPost { path, post } => {
-            handlers::app_post::sync_put(&path, post, app_kinds).await
-        }
+        TranslatedPut::AppPost { path, post } => handlers::app_post::sync_put(&path, post).await,
         TranslatedPut::User { user_id, user } => handlers::user::sync_put(user, user_id).await,
-        TranslatedPut::Post { key, post } => {
-            handlers::post::sync_put(post, key, &ingestor).await?;
-            if let Some(path) = nexus_common::models::app_post::AppPostUri::parse_social(&event.uri)
-            {
-                let input = path
-                    .read(&blob)
-                    .map_err(EventProcessorError::SpecValidation)?;
-                let kind = post_feed
-                    .social_kinds
-                    .contains(&input.kind.0)
-                    .then_some(input.kind.0);
-                handlers::post_feed::after_put(&path, kind).await?;
-            }
-            Ok(())
-        }
+        TranslatedPut::Post { key, post } => handlers::post::sync_put(post, key, &ingestor).await,
         TranslatedPut::Follow {
             user_id,
             followee_id,
@@ -236,20 +207,14 @@ pub async fn handle_del_event(
     match translate_del(&event.target)? {
         TranslatedDel::AppPost(path) => handlers::app_post::del(&path).await,
         TranslatedDel::User { user_id } => handlers::user::del(user_id).await,
-        TranslatedDel::Post(key) => {
-            let social_path = nexus_common::models::app_post::AppPostUri::parse_social(&event.uri);
-            if let Some(path) = &social_path {
-                handlers::post_feed::before_del(path).await?;
+        TranslatedDel::Post(key) => match handlers::post::del(key, &ingestor).await {
+            Err(EventProcessorError::SkipIndexing)
+                if matches!(event.target, target::EventTarget::Social(_)) =>
+            {
+                Ok(())
             }
-            match handlers::post::del(key, &ingestor).await {
-                Err(EventProcessorError::SkipIndexing) if social_path.is_some() => {}
-                result => result?,
-            }
-            if let Some(path) = &social_path {
-                handlers::post_feed::after_del(path).await?;
-            }
-            Ok(())
-        }
+            result => result,
+        },
         TranslatedDel::Follow {
             user_id,
             followee_id,

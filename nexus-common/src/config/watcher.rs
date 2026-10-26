@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use pubky_social_specs::legacy_v0::VALIDATION_LIMITS;
 use pubky_social_specs::PubkyId;
 use serde::{de::Error, Deserialize, Deserializer, Serialize};
-use std::{collections::BTreeMap, fmt::Debug};
+use std::fmt::Debug;
 
 // Testnet homeserver key
 pub const HOMESERVER_PUBKY: &str = "8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo";
@@ -93,37 +93,6 @@ impl Default for EventRetryConfig {
     }
 }
 
-/// App-owned kinds that are references only, without a graph node.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
-pub struct AppKindsConfig {
-    #[serde(default)]
-    pub feed_only: Vec<String>,
-}
-
-pub fn default_app_kinds() -> BTreeMap<String, AppKindsConfig> {
-    BTreeMap::from([(
-        "music".into(),
-        AppKindsConfig {
-            feed_only: vec!["listening".into()],
-        },
-    )])
-}
-
-/// Social v1 kinds whose content-free references enter the resource feed as kind:post.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(default)]
-pub struct PostFeedConfig {
-    pub social_kinds: Vec<String>,
-}
-
-impl Default for PostFeedConfig {
-    fn default() -> Self {
-        Self {
-            social_kinds: vec!["event".into(), "rsvp".into()],
-        }
-    }
-}
-
 /// Configuration settings for the Nexus Watcher service
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct WatcherConfig {
@@ -204,12 +173,6 @@ pub struct WatcherConfig {
     #[serde(default)]
     pub retry: EventRetryConfig,
 
-    #[serde(default = "default_app_kinds")]
-    pub app_kinds: BTreeMap<String, AppKindsConfig>,
-
-    #[serde(default)]
-    pub post_feed: PostFeedConfig,
-
     // Moderation
     pub moderation_id: PubkyId,
     pub moderated_tags: Vec<String>,
@@ -240,8 +203,6 @@ impl Default for WatcherConfig {
             retry_processor_interval_ms: DEFAULT_RETRY_PROCESSOR_INTERVAL_MS,
             max_file_size: DEFAULT_MAX_FILE_SIZE,
             retry: EventRetryConfig::default(),
-            app_kinds: default_app_kinds(),
-            post_feed: PostFeedConfig::default(),
             moderation_id,
             moderated_tags: MODERATED_TAGS.iter().map(|s| s.to_string()).collect(),
         }
@@ -308,20 +269,4 @@ fn default_retry_processor_interval_ms() -> u64 {
 
 fn default_max_file_size() -> u64 {
     DEFAULT_MAX_FILE_SIZE
-}
-
-#[cfg(test)]
-mod post_feed_tests {
-    use super::*;
-
-    #[test]
-    fn defaults_and_explicit_social_selection() {
-        let defaults: PostFeedConfig = toml::from_str("").unwrap();
-        assert_eq!(defaults.social_kinds, ["event", "rsvp"]);
-        let disabled: PostFeedConfig = toml::from_str("social_kinds = []").unwrap();
-        assert!(disabled.social_kinds.is_empty());
-        let selected: PostFeedConfig = toml::from_str("social_kinds = [\"note\"]").unwrap();
-        assert_eq!(selected.social_kinds, ["note"]);
-        assert_eq!(default_app_kinds()["music"].feed_only, ["listening"]);
-    }
 }

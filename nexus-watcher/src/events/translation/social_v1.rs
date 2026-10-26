@@ -50,8 +50,8 @@ pub fn translate_put(
             serde_json::from_value(serde_json::Value::String(envelope.kind.0.clone()))
                 .map_err(|e| EventProcessorError::SpecValidation(e.to_string()))?;
         if matches!(kind, PubkySocialPostKind::Unknown(_)) {
-            // The pinned v1 reader cannot validate event/rsvp content. Preserve N3
-            // social indexing using its Unknown kind; apps interpret the content.
+            // Unknown social tokens retain the Unknown storage kind until the
+            // pinned reader knows their content semantics.
             return Ok(TranslatedPut::Post {
                 key: owned_key(parsed.user_id.clone(), id),
                 post: PostInput::from_open_v1(envelope, &parsed.user_id, id),

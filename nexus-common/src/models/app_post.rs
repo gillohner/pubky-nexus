@@ -21,12 +21,15 @@ pub fn valid_kind(value: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
+/// Sub-spec namespace rule, pending the validator in the pinned specs crate.
+/// Social has its own reader and is never an app namespace.
 pub fn valid_namespace(value: &str) -> bool {
-    (1..=64).contains(&value.len())
+    value != "social"
+        && (1..=32).contains(&value.len())
         && value.as_bytes()[0].is_ascii_lowercase()
         && value
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b".-_".contains(&b))
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// The app owns the vocabulary and content semantics. Nexus accepts bounded lowercase
@@ -95,7 +98,7 @@ impl AppPostUri {
         else {
             return None;
         };
-        if namespace == "pubky.app" || !valid_namespace(&namespace) || epoch != "v1" {
+        if !valid_namespace(&namespace) || epoch != "v1" {
             return None;
         }
         // Reuse the pinned reader's timestamp, leaf, slug and segment rules rather
@@ -365,7 +368,7 @@ mod tests {
 
     fn stored() -> AppPostUri {
         AppPostUri::parse(&format!(
-            "pubky://{AUTHOR}/pub/music/v1/posts/{ID}/{EDIT}.json"
+            "pubky://{AUTHOR}/pub/example/v1/posts/{ID}/{EDIT}.json"
         ))
         .unwrap()
     }
@@ -374,7 +377,7 @@ mod tests {
     fn canonical_versions_share_a_logical_identity() {
         let plain = stored();
         let labelled =
-            AppPostUri::parse(&plain.version_uri().replace(".json", "-my-session.json")).unwrap();
+            AppPostUri::parse(&plain.version_uri().replace(".json", "-my-article.json")).unwrap();
         assert_eq!(plain.uri(), labelled.uri());
         assert_ne!(plain.version_uri(), labelled.version_uri());
         assert_eq!(AppPostUri::parse(&plain.uri()).unwrap().version, None);
@@ -382,12 +385,39 @@ mod tests {
             plain.version_uri().replace("pubky://", "pubky"),
             plain.version_uri().replace("/pub/", "/priv/"),
             plain.version_uri().replace(".json", ".txt"),
-            plain.version_uri().replace("/music/", "/pubky.app/"),
-            plain.version_uri().replace("/music/", "/social/"),
+            plain.version_uri().replace("/example/", "/pubky.app/"),
+            plain.version_uri().replace("/example/", "/social/"),
             format!("{}/extra", plain.version_uri()),
         ] {
             assert!(AppPostUri::parse(&uri).is_none(), "{uri}");
         }
+    }
+
+    #[test]
+    fn app_namespaces_follow_the_subspec_rule_without_an_allowlist() {
+        for namespace in ["x", "example-2", "abcdefghijklmnopqrstuvwxyz012345"] {
+            assert!(valid_namespace(namespace), "{namespace}");
+            let uri = format!("pubky://{AUTHOR}/pub/{namespace}/v1/posts/{ID}/{EDIT}.json");
+            assert_eq!(AppPostUri::parse(&uri).unwrap().namespace, namespace);
+        }
+        for namespace in [
+            "",
+            "social",
+            "pubky.app",
+            "example.app",
+            "example_app",
+            "Example",
+            "1example",
+            "-example",
+            "exámple",
+            "abcdefghijklmnopqrstuvwxyz0123456",
+        ] {
+            assert!(!valid_namespace(namespace), "{namespace}");
+            let uri = format!("pubky://{AUTHOR}/pub/{namespace}/v1/posts/{ID}/{EDIT}.json");
+            assert!(AppPostUri::parse(&uri).is_none(), "{namespace}");
+        }
+        let social = format!("pubky://{AUTHOR}/pub/social/v1/posts/{ID}/{EDIT}.json");
+        assert!(AppPostUri::parse_social(&social).is_some());
     }
 
     #[test]

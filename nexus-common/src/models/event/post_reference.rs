@@ -1,4 +1,4 @@
-//! Fork-only self references for app and selected social post versions.
+//! Fork-only self references for app post versions.
 //! The list, epoch, pending-delete journal and publication rules belong to the
 //! resource feed. Only per-version recovery metadata is specific to posts.
 
@@ -8,7 +8,7 @@ use super::resource_changes::{
 use crate::db::graph::{GraphError, Query};
 use crate::db::kv::{RedisError, RedisResult};
 use crate::db::{get_neo4j_graph, get_redis_conn};
-use crate::models::app_post::AppPostUri;
+use crate::models::app_post::{valid_namespace, AppPostUri};
 use crate::models::error::{ModelError, ModelResult};
 use crate::universal_tag::normalize::{normalize_uri, resource_id};
 use deadpool_redis::redis::{self, AsyncCommands};
@@ -20,9 +20,9 @@ impl ResourceChange {
     /// The object names itself. The logical URI is normalized and hashed exactly
     /// like any Resource; the replay key still names the actual version file.
     pub fn post(path: &AppPostUri, op: ResourceChangeOp) -> ModelResult<Self> {
-        if path.version.is_none() {
+        if path.version.is_none() || !valid_namespace(&path.namespace) {
             return Err(ModelError::from_generic(
-                "A post reference requires a stored version",
+                "A post reference requires a stored app-namespace version",
             ));
         }
         let (uri, _) = normalize_uri(&path.uri()).map_err(ModelError::from_generic)?;
@@ -38,8 +38,8 @@ impl ResourceChange {
         })
     }
 
-    /// Every accepted version survives here until its DEL, including feed-only
-    /// versions and earlier edits after N3 removes the logical graph metadata.
+    /// Every accepted version survives here until its DEL, including earlier
+    /// edits after N3 removes the logical graph metadata.
     pub async fn version_record(path: &AppPostUri) -> RedisResult<Option<Self>> {
         let raw: Option<String> = get_redis_conn()
             .await?
@@ -50,34 +50,18 @@ impl ResourceChange {
         })
         .transpose()
     }
-
-    /// Selected social DELs require evidence that this version was selected.
-    pub async fn prepare_version_delete(path: &AppPostUri) -> RedisResult<()> {
-        if let Some(mut line) = Self::version_record(path).await? {
-            line.op = ResourceChangeOp::Del;
-            line.at = chrono::Utc::now().timestamp_millis();
-            line.prepare_delete().await?;
-        }
-        Ok(())
-    }
 }
 
 pub(super) async fn seed_post_references(temp: &str) -> ModelResult<()> {
     let mut conn = get_redis_conn().await?;
     // Recover a graph-only commit or current heads after Redis loss. Historical
-    // and feed-only versions come from metadata; live appends follow the snapshot.
+    // versions come from metadata; live appends follow the snapshot.
     let mut rows = get_neo4j_graph()?
         .execute(Query::new(
             "post_references_seed",
             r"
-        CALL {
-            MATCH (p:Resource) WHERE p.namespace IS NOT NULL AND p.version_uri IS NOT NULL
-            RETURN p.version_uri AS version_uri, p.app_indexed_at AS at
-            UNION ALL
-            MATCH (s:Post) WHERE s.post_feed_version IS NOT NULL AND NOT coalesce(s.deleted, false)
-            RETURN 'pubky://' + s.author + s.post_feed_version AS version_uri, s.post_feed_at AS at
-        }
-        RETURN version_uri, at ORDER BY at, version_uri
+        MATCH (p:Resource) WHERE p.namespace IS NOT NULL AND p.version_uri IS NOT NULL
+        RETURN p.version_uri AS version_uri, p.app_indexed_at AS at ORDER BY at, version_uri
     ",
         ))
         .await
@@ -90,9 +74,10 @@ pub(super) async fn seed_post_references(temp: &str) -> ModelResult<()> {
             .await
             .map_err(RedisError::from)?
         {
-            let path = AppPostUri::parse(&version_uri)
-                .or_else(|| AppPostUri::parse_social(&version_uri))
-                .ok_or_else(|| ModelError::from_generic("Invalid stored post version URI"))?;
+            let Some(path) = AppPostUri::parse(&version_uri).filter(|path| path.version.is_some())
+            else {
+                continue;
+            };
             let mut line = ResourceChange::post(&path, ResourceChangeOp::Put)?;
             line.at = row.get("at")?;
             batch.push(line.json()?);
@@ -115,7 +100,13 @@ pub(super) async fn seed_post_references(temp: &str) -> ModelResult<()> {
             .query_async(&mut conn)
             .await
             .map_err(RedisError::from)?;
-        let lines: Vec<String> = records.into_iter().map(|(_, raw)| raw).collect();
+        // Older deployments may have stored social references in the same hash.
+        // Only accepted app-version keys belong in a newly published snapshot.
+        let lines: Vec<String> = records
+            .into_iter()
+            .filter(|(uri, _)| AppPostUri::parse(uri).is_some_and(|path| path.version.is_some()))
+            .map(|(_, raw)| raw)
+            .collect();
         if !lines.is_empty() {
             write_seed_batch(temp, &lines).await?;
         }
@@ -166,15 +157,15 @@ mod tests {
                     .param("author", author.clone()),
             )
             .await?;
-        let durable = path(&author, "events", "0032SSN7Q4EVG");
-        let input = durable
-            .read(br#"{"kind":"availability","content":"opaque"}"#)
+        let graph_head = path(&author, "other-example", "0032SSN7Q4EVG");
+        let input = graph_head
+            .read(br#"{"kind":"note","content":"opaque"}"#)
             .unwrap();
-        assert!(AppPost::new(&durable, input).put().await?); // graph commit, no append yet
-        let first = path(&author, "music", "0032SSN7Q4EVJ");
+        assert!(AppPost::new(&graph_head, input).put().await?); // graph commit, no append yet
+        let first = path(&author, "example", "0032SSN7Q4EVJ");
         let mut second = first.clone();
         second.version = Some("0032SSN7Q4EVM".into());
-        second.label = Some("now-playing".into());
+        second.label = Some("revised".into());
         for version in [&first, &second] {
             ResourceChange::post(version, ResourceChangeOp::Put)?
                 .store()
@@ -190,10 +181,12 @@ mod tests {
             .filter(|line| line.author == author)
             .collect();
         assert_eq!(own.len(), 3);
-        assert_eq!(own[0].uri, durable.uri());
-        assert_eq!(own[0].object_path, durable.version_path());
+        assert_eq!(own[0].uri, graph_head.uri());
+        assert_eq!(own[0].object_path, graph_head.version_path());
         // A version deletion preserves the other version's metadata, including its own kind.
-        ResourceChange::prepare_version_delete(&first).await?;
+        ResourceChange::post(&first, ResourceChangeOp::Del)?
+            .prepare_delete()
+            .await?;
         ResourceChange::finish_delete(first.author.as_ref(), &first.version_uri()).await?;
         ResourceChange::finish_delete(first.author.as_ref(), &first.version_uri()).await?;
         let (page, _, length) = ResourceChange::get_from_index(seed_length, 10).await?;
@@ -203,7 +196,9 @@ mod tests {
         assert!(ResourceChange::version_record(&first).await?.is_none());
         assert!(ResourceChange::version_record(&second).await?.is_some());
         // A second file DEL names that file only. No synthetic whole-post deletion.
-        ResourceChange::prepare_version_delete(&second).await?;
+        ResourceChange::post(&second, ResourceChangeOp::Del)?
+            .prepare_delete()
+            .await?;
         ResourceChange::finish_delete(second.author.as_ref(), &second.version_uri()).await?;
         assert!(ResourceChange::version_record(&second).await?.is_none());
         let mut logical = first.clone();
@@ -233,7 +228,7 @@ mod tests {
             .0
             .lines
             .is_empty());
-        AppPost::delete(&durable.uri()).await?;
+        AppPost::delete(&graph_head.uri()).await?;
         graph
             .run(
                 Query::new(
@@ -247,11 +242,11 @@ mod tests {
     }
 
     #[tokio_shared_rt::test(shared)]
-    async fn live_seed_recovers_selected_social_head_without_redis_metadata(
+    async fn live_seed_ignores_obsolete_social_graph_and_version_metadata(
     ) -> Result<(), crate::types::DynError> {
         StackManager::setup(&StackConfig::default()).await?;
         let author = pubky::Keypair::random().public_key().to_z32();
-        let path = AppPostUri::parse_social(&format!(
+        let social = AppPostUri::parse_social(&format!(
             "pubky://{author}/pub/social/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ.json"
         ))
         .unwrap();
@@ -266,19 +261,42 @@ mod tests {
         ",
                 )
                 .param("author", author.clone())
-                .param("id", path.id.clone())
-                .param("uri", path.uri())
-                .param("version", path.version_path()),
+                .param("id", social.id.clone())
+                .param("uri", social.uri())
+                .param("version", social.version_path()),
             )
             .await?;
+        assert!(ResourceChange::post(&social, ResourceChangeOp::Put).is_err());
+        let old = ResourceChange {
+            op: ResourceChangeOp::Put,
+            resource_id: resource_id(&social.uri()),
+            uri: social.uri(),
+            kind: ResourceChangeKind::Post,
+            author: author.clone(),
+            label: None,
+            object_path: social.version_path(),
+            at: 1234,
+        };
+        let mut conn = get_redis_conn().await?;
+        let _: () = conn
+            .hset(POST_VERSIONS_KEY, social.version_uri(), old.json()?)
+            .await?;
+        let app = path(&author, "example", "0032SSN7Q4EVM");
+        let app_line = ResourceChange::post(&app, ResourceChangeOp::Put)?;
+        app_line.store().await?;
         ResourceChange::reseed().await?;
         let lines = ResourceChange::get_from_index(0, 1000).await?.0.lines;
-        let line = lines.iter().find(|line| line.author == author).unwrap();
-        assert_eq!(line.uri, path.uri());
-        assert_eq!(line.kind, ResourceChangeKind::Post);
-        assert_eq!(line.object_path, path.version_path());
-        assert_eq!(line.at, 1234);
-        assert!(ResourceChange::version_record(&path).await?.is_none());
+        let own: Vec<_> = lines
+            .into_iter()
+            .filter(|line| line.author == author)
+            .collect();
+        assert_eq!(own, [app_line]);
+        let _: () = conn
+            .hdel(
+                POST_VERSIONS_KEY,
+                &[social.version_uri(), app.version_uri()],
+            )
+            .await?;
         graph
             .run(
                 Query::new(
@@ -296,7 +314,7 @@ mod tests {
     ) -> Result<(), crate::types::DynError> {
         StackManager::setup(&StackConfig::default()).await?;
         let author = pubky::Keypair::random().public_key().to_z32();
-        let version = path(&author, "maps", "0032SSN7Q4EVG");
+        let version = path(&author, "example", "0032SSN7Q4EVG");
         let line = ResourceChange::post(&version, ResourceChangeOp::Put)?;
         let mut conn = get_redis_conn().await?;
         let start: u64 = conn.llen(RESOURCE_CHANGES_KEY).await?;
@@ -307,7 +325,9 @@ mod tests {
         // and its DEL; neither can disappear when the new generation is published.
         line.store().await?;
         line.store().await?;
-        ResourceChange::prepare_version_delete(&version).await?;
+        ResourceChange::post(&version, ResourceChangeOp::Del)?
+            .prepare_delete()
+            .await?;
         ResourceChange::finish_delete(version.author.as_ref(), &version.version_uri()).await?;
         assert_eq!(publish_seed(&author, &temp, start).await?, 4);
         release_lock(SEED_LOCK, &author).await?;

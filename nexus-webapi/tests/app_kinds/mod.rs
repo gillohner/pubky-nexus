@@ -16,12 +16,12 @@ async fn namespace_stream_is_explicit_filtered_and_content_free() -> Result<()> 
                 .param("author", author.clone()),
         )
         .await?;
-    let namespace = "music";
+    let namespace = "example";
     let mut uris = vec![];
     for (index, (id, kind)) in [
-        ("0032SSN7Q4EVG", "session"),
-        ("0032SSN7Q4EVJ", "listen"),
-        ("0032SSN7Q4EVM", "listen"),
+        ("0032SSN7Q4EVG", "article"),
+        ("0032SSN7Q4EVJ", "note"),
+        ("0032SSN7Q4EVM", "note"),
     ]
     .into_iter()
     .enumerate()
@@ -43,6 +43,7 @@ async fn namespace_stream_is_explicit_filtered_and_content_free() -> Result<()> 
         format!("?source=author&author_id={author}"),
         "?sorting=total_engagement".into(),
         "?namespace=pubky.app".into(),
+        "?namespace=social".into(),
     ] {
         let posts = get_request(&format!("/v0/stream/posts{query}")).await?;
         assert!(posts
@@ -75,11 +76,11 @@ async fn namespace_stream_is_explicit_filtered_and_content_free() -> Result<()> 
         assert_eq!(resource[0]["details"]["id"], post["id"]);
         assert_eq!(resource[0]["details"]["uri"], post["uri"]);
     }
-    let listens = get_request(&format!("{endpoint}&kind=listen")).await?;
-    assert_eq!(listens.as_array().unwrap().len(), 2);
-    let sessions = get_request(&format!("{endpoint}&exclude_kinds=listen&source=author")).await?;
-    assert_eq!(sessions.as_array().unwrap().len(), 1);
-    assert_eq!(sessions[0]["kind"], "session");
+    let notes = get_request(&format!("{endpoint}&kind=note")).await?;
+    assert_eq!(notes.as_array().unwrap().len(), 2);
+    let articles = get_request(&format!("{endpoint}&exclude_kinds=note&source=author")).await?;
+    assert_eq!(articles.as_array().unwrap().len(), 1);
+    assert_eq!(articles[0]["kind"], "article");
     let page = get_request(&format!("{endpoint}&skip=1&limit=1")).await?;
     assert_eq!(page.as_array().unwrap().len(), 1);
     assert_eq!(page[0], posts[1]);
@@ -92,25 +93,46 @@ async fn namespace_stream_is_explicit_filtered_and_content_free() -> Result<()> 
     assert_eq!(bounded[0]["indexed_at"], 2000);
     assert!(posts[0]["version_uri"].as_str().unwrap().ends_with(".json"));
     assert_eq!(
-        get_request(&format!("{endpoint}&kind=listening")).await?,
+        get_request(&format!("{endpoint}&kind=memo")).await?,
         json!([])
     );
     for suffix in [
-        "&kind=listen&exclude_kinds=session",
+        "&kind=note&exclude_kinds=article",
         "&kind=UPPER",
         "&source=following",
         "&tags=hello",
         "&sorting=total_engagement",
         "&include_attachment_metadata=true",
-        "&exclude_kinds=listen,,session",
+        "&exclude_kinds=note,,article",
     ] {
         invalid_get_request(&format!("{endpoint}{suffix}"), StatusCode::BAD_REQUEST).await?;
     }
-    invalid_get_request(
-        "/v0/stream/posts?namespace=../music",
-        StatusCode::BAD_REQUEST,
-    )
-    .await?;
+    for namespace in [
+        "",
+        "../example",
+        "example.app",
+        "example_app",
+        "Example",
+        "1example",
+        "-example",
+        "ex%C3%A1mple",
+        "abcdefghijklmnopqrstuvwxyz0123456",
+    ] {
+        invalid_get_request(
+            &format!("/v0/stream/posts?namespace={namespace}"),
+            StatusCode::BAD_REQUEST,
+        )
+        .await?;
+    }
+    for namespace in ["x", "example-2", "abcdefghijklmnopqrstuvwxyz012345"] {
+        assert_eq!(
+            get_request(&format!(
+                "/v0/stream/posts?namespace={namespace}&author_id={author}"
+            ))
+            .await?,
+            json!([])
+        );
+    }
     invalid_get_request(
         &format!("/v0/stream/posts/keys?namespace={namespace}"),
         StatusCode::BAD_REQUEST,
