@@ -232,23 +232,6 @@ impl PostInput {
     }
 }
 
-impl From<PubkySocialPostKind> for PostKind {
-    fn from(kind: PubkySocialPostKind) -> Self {
-        match kind {
-            PubkySocialPostKind::Note => Self::Short,
-            PubkySocialPostKind::Article => Self::Long,
-            PubkySocialPostKind::Image => Self::Image,
-            PubkySocialPostKind::Video => Self::Video,
-            PubkySocialPostKind::Link => Self::Link,
-            PubkySocialPostKind::File => Self::File,
-            PubkySocialPostKind::Collection => Self::Collection,
-            // The reader keeps an unrecognised kind's spelling; Nexus drops it. A kind the
-            // non-exhaustive enum adds later lands here until a pin bump maps it.
-            _ => Self::Unknown,
-        }
-    }
-}
-
 /// The items a collection post's content envelope lists, in order, each as its address with
 /// the curator's `note` dropped; none for any other kind.
 ///

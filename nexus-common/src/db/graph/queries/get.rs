@@ -776,7 +776,12 @@ pub fn resource_stream(
         SortOrder::Ascending => (">=", "<="),
     };
 
-    let mut cypher = String::from("MATCH (tagger:User)-[t:TAGGED]->(r:Resource)\n");
+    let mut cypher =
+        if matches!(sorting, ResourceSorting::Rating) && app.is_none() && labels.is_none() {
+            String::from("MATCH (r:Resource)\n")
+        } else {
+            String::from("MATCH (tagger:User)-[t:TAGGED]->(r:Resource)\n")
+        };
 
     let mut where_clauses = Vec::new();
     if app.is_some() {
@@ -793,6 +798,7 @@ pub fn resource_stream(
 
     let score_expr = match sorting {
         ResourceSorting::Timeline => "MAX(t.indexed_at)",
+        ResourceSorting::Rating => "coalesce(r.rating_avg,0.0)",
     };
     cypher.push_str(&format!("WITH r, {score_expr} AS score\n"));
 
@@ -1727,7 +1733,7 @@ pub fn post_stream(
         (Some(rule), StreamSorting::Timeline) => cypher.push_str(&format!(
             "WITH DISTINCT p\nORDER BY p.indexed_at {order_dir}, p.id {order_dir}\nMATCH (p)<-[:AUTHORED]-(author:User)\nWHERE {rule}\n"
         )),
-        (Some(rule), StreamSorting::TotalEngagement) => cypher.push_str(&format!(
+        (Some(rule), StreamSorting::TotalEngagement | StreamSorting::Rating) => cypher.push_str(&format!(
             "WITH DISTINCT p\nMATCH (p)<-[:AUTHORED]-(author:User)\nWHERE {rule}\n"
         )),
         (None, _) => cypher.push_str("WITH DISTINCT p, author\n"),
@@ -1739,6 +1745,28 @@ pub fn post_stream(
     // within a response (pagination across ties is still best-effort: the cursor
     // carries only the score, not the id).
     let (score_expr, order_clause) = match sorting {
+        StreamSorting::Rating => {
+            cypher.push_str("WITH p, author, coalesce(p.rating_avg,0.0) AS rating_score\n");
+            where_clause_applied = false;
+            if pagination.start.is_some() {
+                append_condition(
+                    &mut cypher,
+                    &format!("rating_score {start_op} $start"),
+                    &mut where_clause_applied,
+                );
+            }
+            if pagination.end.is_some() {
+                append_condition(
+                    &mut cypher,
+                    &format!("rating_score {end_op} $end"),
+                    &mut where_clause_applied,
+                );
+            }
+            (
+                "rating_score",
+                format!("ORDER BY rating_score {order_dir}, p.id {order_dir}"),
+            )
+        }
         StreamSorting::Timeline => (
             "p.indexed_at",
             format!("ORDER BY p.indexed_at {order_dir}, p.id {order_dir}"),
@@ -2114,9 +2142,7 @@ mod tests {
     #[test]
     fn post_stream_trust_rule_matches_authors_after_sorting_posts() {
         let tags = Some(vec!["a".to_string(), "b".to_string()]);
-        let kind = Some(KindFilter::Kind(
-            pubky_social_specs::legacy_v0::PubkyAppPostKind::Short,
-        ));
+        let kind = Some(KindFilter::Kind(crate::models::post::PostKind::Short));
         let cypher = all_stream(
             StreamSorting::Timeline,
             &tags,
@@ -2140,9 +2166,7 @@ mod tests {
     /// Engagement sorting drops hidden authors before counting engagement.
     #[test]
     fn post_stream_trust_rule_filters_engagement_streams() {
-        let kind = Some(KindFilter::Kind(
-            pubky_social_specs::legacy_v0::PubkyAppPostKind::Short,
-        ));
+        let kind = Some(KindFilter::Kind(crate::models::post::PostKind::Short));
         let ranked = Some(TrustRule::Ranked);
         let cypher = all_stream(StreamSorting::TotalEngagement, &None, kind, ranked);
         let rule = format!("WHERE {}", ranked_user("author"));

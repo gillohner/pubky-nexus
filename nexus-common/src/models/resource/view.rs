@@ -11,6 +11,8 @@ use crate::models::tag::TagDetails;
 
 #[derive(Debug, Serialize, Deserialize, Default, ToSchema)]
 pub struct ResourceView {
+    #[serde(flatten, default)]
+    pub rating: crate::models::social_event::RatingSummary,
     pub details: ResourceDetails,
     pub tags: Vec<TagDetails>,
     pub taggers_count: usize,
@@ -36,7 +38,14 @@ impl ResourceView {
             limit_taggers,
         );
         match fetch_row_from_graph(query).await? {
-            Some(row) => Self::from_row(&row),
+            Some(row) => {
+                let mut view = Self::from_row(&row)?;
+                if let Some(view) = &mut view {
+                    view.rating =
+                        crate::models::social_event::rating_summary(&view.details.uri).await?;
+                }
+                Ok(view)
+            }
             None => Ok(None),
         }
     }
@@ -51,6 +60,7 @@ impl ResourceView {
         let tags = tag_details_from_row(row)?;
         let taggers_count = tags.iter().map(|tag| tag.taggers_count).sum();
         Ok(Some(Self {
+            rating: Default::default(),
             details,
             tags,
             taggers_count,
