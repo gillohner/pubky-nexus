@@ -9,3 +9,5 @@ mod social_v1;
 mod tags;
 mod users;
 pub(crate) mod utils;
+
+mod social_events;

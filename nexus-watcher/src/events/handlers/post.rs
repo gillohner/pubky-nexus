@@ -5,12 +5,12 @@ use nexus_common::db::queries;
 use nexus_common::db::queries::get::post_is_safe_to_delete;
 use nexus_common::db::{exec_single_row, execute_graph_operation, OperationOutcome};
 use nexus_common::models::notification::{Notification, PostChangedSource, PostChangedType};
+use nexus_common::models::post::PostKind as PubkyAppPostKind;
 use nexus_common::models::post::{
     collection_item_keys, sync_collected_edges, PostCounts, PostDetails, PostParent, PostParents,
     PostRelationships, PostStream,
 };
 use nexus_common::models::user::UserIngestor;
-use pubky_social_specs::legacy_v0::PubkyAppPostKind;
 use pubky_social_specs::PubkyId;
 use tracing::{debug, Instrument};
 
@@ -25,12 +25,68 @@ pub async fn sync_put(
     ingestor: &UserIngestor,
 ) -> Result<(), EventProcessorError> {
     reject_unsupported_parent(&post)?;
+    let is_social = post.uri.contains("/pub/social/v1/posts/");
+    let projection = if is_social {
+        nexus_common::models::social_event::SocialContent::read(
+            post.kind.clone(),
+            &post.content,
+            chrono::Utc::now(),
+        )?
+    } else {
+        nexus_common::models::social_event::SocialContent::Other
+    };
+    if post.kind == PostKind::Rsvp {
+        let parent = post.parent.as_ref().ok_or_else(|| {
+            EventProcessorError::SpecValidation("RSVP requires an event parent".into())
+        })?;
+        let ReferenceTarget::Post(parent_key) = &parent.target else {
+            return Err(EventProcessorError::SpecValidation(
+                "RSVP parent must be a social event".into(),
+            ));
+        };
+        match nexus_common::models::social_event::validate_parent(&parent.uri).await? {
+            Some(true) => {}
+            Some(false) => {
+                return Err(EventProcessorError::SpecValidation(
+                    "RSVP parent is not an event".into(),
+                ))
+            }
+            None => {
+                fail_on_permanent_ingest_error(
+                    ingestor.maybe_ingest_user(&parent_key.owner_id).await,
+                )?;
+                return Err(EventProcessorError::missing_dependencies(vec![parent
+                    .uri
+                    .clone()]));
+            }
+        }
+    }
+    let source_content = post.content.clone();
+    let source_parent = post.parent.as_ref().map(|r| r.uri.clone());
     let post_details = post.clone().into_details(&key);
     let ResourceKey {
         owner_id: author_id,
         resource_id: post_id,
     } = key;
-    sync_put_details(post, post_details, author_id, post_id, ingestor).await
+    sync_put_details(
+        post,
+        post_details,
+        author_id.clone(),
+        post_id.clone(),
+        ingestor,
+    )
+    .await?;
+    if is_social {
+        nexus_common::models::social_event::sync(
+            &author_id,
+            &post_id,
+            &source_content,
+            source_parent.as_deref(),
+            &projection,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Rejects a reply to a file, a profile or a `pubky.app` tag as
@@ -38,6 +94,9 @@ pub async fn sync_put(
 /// one. A reply to a URL or another app's object, its tags included, is indexed with no reply
 /// edge.
 fn reject_unsupported_parent(post: &PostInput) -> Result<(), EventProcessorError> {
+    if post.kind == PostKind::Rating {
+        return Ok(());
+    }
     match &post.parent {
         Some(Reference {
             uri,
@@ -631,6 +690,10 @@ pub async fn del(key: ResourceKey, ingestor: &UserIngestor) -> Result<(), EventP
     else {
         return Err(EventProcessorError::SkipIndexing);
     };
+
+    if uri.contains("/pub/social/v1/posts/") {
+        nexus_common::models::social_event::remove(&key.owner_id, &key.resource_id).await?;
+    }
 
     // Graph query to check if there is any edge at all to this post other than AUTHORED, is a reply or is a repost.
     let query = post_is_safe_to_delete(&key.owner_id, &key.resource_id);

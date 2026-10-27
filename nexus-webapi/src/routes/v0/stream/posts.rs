@@ -12,12 +12,12 @@ use crate::{Error, Result as AppResult};
 use axum::Json;
 use nexus_common::db::kv::SortOrder;
 use nexus_common::models::app_post::{valid_kind, valid_namespace, AppPost};
+use nexus_common::models::post::PostKind as PubkyAppPostKind;
 use nexus_common::types::StreamSorting;
 use nexus_common::{
     models::post::{KindFilter, PostKeyStream, PostStream, StreamSource},
     types::{DomainTrust, WotDepth},
 };
-use pubky_social_specs::legacy_v0::PubkyAppPostKind;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 use utoipa::{OpenApi, ToSchema};
@@ -273,8 +273,10 @@ impl PostStreamQuery {
         if !matches!(
             self.source,
             StreamSourceKind::All | StreamSourceKind::Author
-        ) || matches!(self.sorting, Some(StreamSorting::TotalEngagement))
-            || self.tags.is_some()
+        ) || matches!(
+            self.sorting,
+            Some(StreamSorting::TotalEngagement | StreamSorting::Rating)
+        ) || self.tags.is_some()
             || self.domain_tags.is_some()
             || self.post_id.is_some()
             || self.observer_id.is_some()
@@ -368,7 +370,7 @@ pub enum PostStreamResponse {
         ("observer_id" = Option<PubkyId>, Query, description = "Observer Pubky ID. The central point for streams with Reach"),
         ("author_id" = Option<PubkyId>, Query, description = "Filter posts by an specific author User ID"),
         ("post_id" = Option<PostId>, Query, description = "This parameter is needed when we want to retrieve the replies stream for a post"),
-        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline` or `total_engagement`). Ties are broken by post id; pagination across equal scores is best-effort."),
+        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline`, `total_engagement` or `rating`, the 1–10 average). Ties are broken by post id; pagination across equal scores is best-effort."),
         ("order" = Option<SortOrder>, Query, description = "Ordering of response list. Either 'ascending' or 'descending'. Defaults to descending."),
         ("tags" = Option<Tags>, Query, description = "Filter by a list of comma-separated tags (max 5). E.g.,`&tags=dev,free,opensource`. Only posts matching at least one of the tags will be returned."),
         ("depth" = Option<u8>, Query, description = "WoT traversal depth. For `source=wot`: 1-3, default 2. For `source=wot_domain`: 0-3, default 2, where `depth=0` is the observer-only (\"Me\") trust set (posts by authors the observer tagged directly, no follow traversal). `depth=0` is invalid for `source=wot`. Ignored for other sources."),
@@ -459,7 +461,7 @@ pub async fn stream_posts_handler(
         ("observer_id" = Option<PubkyId>, Query, description = "Observer Pubky ID. The central point for streams with Reach"),
         ("author_id" = Option<PubkyId>, Query, description = "Filter posts by an specific author User ID"),
         ("post_id" = Option<PostId>, Query, description = "This parameter is needed when we want to retrieve the replies stream for a post"),
-        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline` or `total_engagement`). Ties are broken by post id; pagination across equal scores is best-effort."),
+        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline`, `total_engagement` or `rating`, the 1–10 average). Ties are broken by post id; pagination across equal scores is best-effort."),
         ("order" = Option<SortOrder>, Query, description = "Ordering of response list. Either 'ascending' or 'descending'. Defaults to descending."),
         ("tags" = Option<Tags>, Query, description = "Filter by a list of comma-separated tags (max 5). E.g.,`&tags=dev,free,opensource`. Only posts matching at least one of the tags will be returned."),
         ("depth" = Option<u8>, Query, description = "WoT traversal depth. For `source=wot`: 1-3, default 2. For `source=wot_domain`: 0-3, default 2, where `depth=0` is the observer-only (\"Me\") trust set (posts by authors the observer tagged directly, no follow traversal). `depth=0` is invalid for `source=wot`. Ignored for other sources."),

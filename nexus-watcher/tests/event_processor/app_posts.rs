@@ -341,7 +341,7 @@ async fn social_reply_to_app_post_and_app_parent_edges() -> Result<()> {
     for kind in [
         None,
         Some(KindFilter::Kind(
-            pubky_social_specs::legacy_v0::PubkyAppPostKind::Short,
+            pubky_social_specs::legacy_v0::PubkyAppPostKind::Short.into(),
         )),
     ] {
         assert!(PostStream::get_post_keys(
@@ -464,14 +464,42 @@ async fn kind_edits_update_metadata_and_edges_on_the_same_resource() -> Result<(
 async fn social_put_edit_retry_and_del_do_not_emit_resource_post_lines() -> Result<()> {
     let (mut test, key, author) = setup().await?;
     let (_, _, cursor) = ResourceChange::get_from_index(0, 0).await?;
+    let event_content = json!({
+        "title":"Social event", "description":"No app resource-feed line",
+        "start":(chrono::Utc::now()+chrono::Duration::days(1)).format("%Y-%m-%dT%H:%M:%S").to_string(),
+        "timeZone":"UTC", "duration":"PT1H"
+    });
+    let target_id = generate_post_id();
+    let target_path: ResourcePath =
+        format!("/pub/social/v1/posts/{target_id}/{target_id}.json").parse()?;
+    let target_uri = pubky_social_specs::post_uri_builder(author.clone(), target_id.clone());
+    let mut target = envelope(&target_id, "event");
+    target["content"] = json!(event_content.to_string());
+    test.put(&key, &target_path, &target).await?;
     for kind in ["event", "rsvp", "note"] {
         let id = generate_post_id();
         let path: ResourcePath = format!("/pub/social/v1/posts/{id}/{id}.json").parse()?;
-        test.put(&key, &path, &envelope(&id, kind)).await?;
+        let mut body = envelope(&id, kind);
+        body["content"] = match kind {
+            "event" => json!(event_content.to_string()),
+            "rsvp" => {
+                body["parent"] = json!(target_uri);
+                json!(json!({"status":"accepted"}).to_string())
+            }
+            _ => json!("Original social post"),
+        };
+        test.put(&key, &path, &body).await?;
         let edit = generate_post_id();
         let edited: ResourcePath = format!("/pub/social/v1/posts/{id}/{edit}.json").parse()?;
-        let mut body = envelope(&id, kind);
-        body["content"] = json!("Updated social post");
+        body["content"] = match kind {
+            "event" => {
+                let mut updated = event_content.clone();
+                updated["title"] = json!("Updated social event");
+                json!(updated.to_string())
+            }
+            "rsvp" => json!(json!({"status":"tentative"}).to_string()),
+            _ => json!("Updated social post"),
+        };
         test.put(&key, &edited, &body).await?;
         retrieve_and_handle_event_line(
             &format!("PUT pubky://{author}{edited}"),
@@ -480,7 +508,7 @@ async fn social_put_edit_retry_and_del_do_not_emit_resource_post_lines() -> Resu
         .await?;
         assert_eq!(
             PostDetails::get_by_id(&author, &id).await?.unwrap().content,
-            "Updated social post"
+            body["content"].as_str().unwrap()
         );
         let parsed = AppPostUri::parse_social(&format!("pubky://{author}{edited}")).unwrap();
         assert!(ResourceChange::version_record(&parsed).await?.is_none());
@@ -489,6 +517,8 @@ async fn social_put_edit_retry_and_del_do_not_emit_resource_post_lines() -> Resu
         test.del(&key, &path).await?;
         assert!(own_lines(&author, cursor).await?.is_empty());
     }
+    test.del(&key, &target_path).await?;
+    assert!(own_lines(&author, cursor).await?.is_empty());
     test.cleanup_user(&key).await?;
     Ok(())
 }

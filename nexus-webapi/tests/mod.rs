@@ -16,3 +16,4 @@ pub mod utils;
 
 mod app_kinds;
 mod post_references;
+mod social_events;
