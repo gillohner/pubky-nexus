@@ -13,3 +13,6 @@ pub mod stream;
 pub mod tags;
 pub mod user;
 pub mod utils;
+
+mod app_kinds;
+mod post_references;

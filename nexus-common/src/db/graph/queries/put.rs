@@ -79,9 +79,15 @@ pub fn create_post(
             new_post.kind = $kind,
             new_post.attachments = $attachments,
             new_post.lock = $lock,
-            new_post.deleted = $deleted
-        RETURN existing_post IS NOT NULL AS flag",
+            new_post.deleted = $deleted,
+            new_post.app_parent = $app_parent
+        ",
     );
+
+    if post.app_parent.is_some() {
+        cypher.push_str("MERGE (app_reply_parent:Resource {id: $app_parent_id}) ON CREATE SET app_reply_parent.uri = $app_parent_uri, app_reply_parent.scheme = $app_parent_scheme, app_reply_parent.indexed_at = $indexed_at\nMERGE (new_post)-[:REPLIED]->(app_reply_parent)\n");
+    }
+    cypher.push_str("RETURN existing_post IS NOT NULL AS flag");
 
     let kind = serde_json::to_string(&post.kind)
         .map_err(|e| GraphError::SerializationFailed(Box::new(e)))?;
@@ -96,7 +102,20 @@ pub fn create_post(
         .param("attachments", post.attachments.clone().unwrap_or_default())
         // Pass Option directly so None clears the property; "" would read back as Some("").
         .param("lock", post.lock.clone())
-        .param("deleted", post.deleted);
+        .param("deleted", post.deleted)
+        .param("app_parent", post.app_parent.clone());
+
+    if let Some(uri) = &post.app_parent {
+        let (uri, scheme) = crate::universal_tag::normalize::normalize_uri(uri)
+            .map_err(GraphError::QueryBuildError)?;
+        cypher_query = cypher_query
+            .param(
+                "app_parent_id",
+                crate::universal_tag::normalize::resource_id(&uri),
+            )
+            .param("app_parent_uri", uri)
+            .param("app_parent_scheme", scheme);
+    }
 
     if let Some(parent) = replied {
         cypher_query = cypher_query

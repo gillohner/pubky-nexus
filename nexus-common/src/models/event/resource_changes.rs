@@ -3,6 +3,7 @@
 //! Delivery is at least once: consumers upsert/delete by `(author, object_path)`.
 //! Rebuilds preserve live appends made while the graph snapshot is assembled.
 
+use super::post_reference::{seed_post_references, POST_VERSIONS_KEY};
 use crate::db::graph::{GraphError, Query};
 use crate::db::kv::{RedisError, RedisResult};
 use crate::db::{get_neo4j_graph, get_redis_conn, release_lock, try_acquire_lock};
@@ -15,10 +16,10 @@ use std::time::Duration;
 use utoipa::ToSchema;
 
 pub const RESOURCE_CHANGES_KEY: &str = "Event:ResourceChanges";
-const EPOCH_KEY: &str = "Event:ResourceChanges:Epoch";
-const SEED_LOCK: &str = "Event:ResourceChanges:SeedLock";
-const SEED_TTL: u64 = 3660;
-const BATCH_SIZE: usize = 1000;
+pub(super) const EPOCH_KEY: &str = "Event:ResourceChanges:Epoch";
+pub(super) const SEED_LOCK: &str = "Event:ResourceChanges:SeedLock";
+pub(super) const SEED_TTL: u64 = 3660;
+pub(super) const BATCH_SIZE: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -27,12 +28,13 @@ pub enum ResourceChangeOp {
     Del,
 }
 
-/// Only `tag` is emitted today. `reply`, `embed` and `collection` are reserved for the other
-/// references a post makes to a URI.
+/// `tag` and fork-only `post` are emitted. Other kinds are reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ResourceChangeKind {
     Tag,
+    /// Fork-only: the writing object names its own versionless URI.
+    Post,
     Reply,
     Embed,
     Collection,
@@ -81,7 +83,7 @@ fn object_path<'a>(author: &str, tag_uri: &'a str) -> ModelResult<&'a str> {
     tag_uri
         .strip_prefix(&format!("pubky://{author}"))
         .filter(|path| path.starts_with("/pub/"))
-        .ok_or_else(|| ModelError::from_generic("Invalid tag storage URI"))
+        .ok_or_else(|| ModelError::from_generic("Invalid object storage URI"))
 }
 
 static APPEND: LazyLock<Script> = LazyLock::new(|| {
@@ -89,6 +91,13 @@ static APPEND: LazyLock<Script> = LazyLock::new(|| {
         r"
     redis.call('SETNX', KEYS[2], ARGV[2])
     redis.call('RPUSH', KEYS[1], ARGV[1])
+    if ARGV[3] == 'post' then
+        if ARGV[5] == 'put' then
+            redis.call('HSET', KEYS[4], ARGV[4], ARGV[1])
+        else
+            redis.call('HDEL', KEYS[4], ARGV[4])
+        end
+    end
     redis.call('DEL', KEYS[3])
 ",
     )
@@ -101,6 +110,10 @@ static FINISH_DELETE: LazyLock<Script> = LazyLock::new(|| {
     if line then
         redis.call('SETNX', KEYS[2], ARGV[1])
         redis.call('RPUSH', KEYS[1], line)
+        local decoded = cjson.decode(line)
+        if decoded.kind == 'post' then
+            redis.call('HDEL', KEYS[4], 'pubky://' .. decoded.author .. decoded.object_path)
+        end
         redis.call('DEL', KEYS[3])
     end
 ",
@@ -141,7 +154,7 @@ impl ResourceChange {
         })
     }
 
-    fn json(&self) -> RedisResult<String> {
+    pub(super) fn json(&self) -> RedisResult<String> {
         serde_json::to_string(self).map_err(|e| RedisError::SerializationFailed(Box::new(e)))
     }
 
@@ -153,15 +166,27 @@ impl ResourceChange {
             .key(RESOURCE_CHANGES_KEY)
             .key(EPOCH_KEY)
             .key(pending_key(&self.author, &self.object_path))
+            .key(POST_VERSIONS_KEY)
             .arg(self.json()?)
             .arg(epoch_seed())
+            .arg(if self.kind == ResourceChangeKind::Post {
+                "post"
+            } else {
+                ""
+            })
+            .arg(format!("pubky://{}{}", self.author, self.object_path))
+            .arg(if self.op == ResourceChangeOp::Put {
+                "put"
+            } else {
+                "del"
+            })
             .invoke_async::<()>(&mut conn)
             .await?;
         Ok(())
     }
 
-    /// Persist delete details before removing the graph edge, which is the only
-    /// source of its target URI and label. Retry preserves the first timestamp.
+    /// Persist delete details before removing graph state. For tags the edge is
+    /// the only source of target/label. Retry preserves the first timestamp.
     pub async fn prepare_delete(&self) -> RedisResult<()> {
         let mut conn = get_redis_conn().await?;
         let _: bool = conn
@@ -179,6 +204,7 @@ impl ResourceChange {
             .key(RESOURCE_CHANGES_KEY)
             .key(EPOCH_KEY)
             .key(pending_key(author, path))
+            .key(POST_VERSIONS_KEY)
             .arg(epoch_seed())
             .invoke_async::<()>(&mut conn)
             .await
@@ -215,7 +241,7 @@ impl ResourceChange {
         Ok((ResourceChangesPage { lines, next_cursor }, epoch, length))
     }
 
-    /// Rebuild from graph edges, then atomically publish with a new epoch.
+    /// Rebuild from graph references and post versions, then publish a new epoch.
     /// The old list's suffix is copied after the snapshot, preserving concurrent
     /// watcher appends (duplicates are resolved by the consumer's replay key).
     pub async fn reseed() -> ModelResult<u64> {
@@ -281,10 +307,11 @@ async fn seed_inner(token: &str, temp: &str) -> ModelResult<u64> {
     if !batch.is_empty() {
         write_seed_batch(temp, &batch).await?;
     }
+    seed_post_references(temp).await?;
     publish_seed(token, temp, start).await.map_err(Into::into)
 }
 
-async fn write_seed_batch(temp: &str, batch: &[String]) -> RedisResult<()> {
+pub(super) async fn write_seed_batch(temp: &str, batch: &[String]) -> RedisResult<()> {
     let mut conn = get_redis_conn().await?;
     redis::pipe()
         .atomic()
@@ -301,7 +328,7 @@ async fn write_seed_batch(temp: &str, batch: &[String]) -> RedisResult<()> {
     Ok(())
 }
 
-async fn publish_seed(token: &str, temp: &str, start: u64) -> RedisResult<u64> {
+pub(super) async fn publish_seed(token: &str, temp: &str, start: u64) -> RedisResult<u64> {
     static PUBLISH: LazyLock<Script> = LazyLock::new(|| {
         Script::new(
             r"

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use nexus_common::models::event::resource_changes::ResourceChange;
 use nexus_common::types::DynError;
 
-/// Regenerates the reference feed from current graph edges, retaining live appends.
+/// Regenerates the reference feed from graph references and post versions, retaining live appends.
 pub struct ResourceChangesSeedJob;
 
 #[async_trait]

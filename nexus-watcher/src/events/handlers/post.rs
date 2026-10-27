@@ -62,7 +62,10 @@ fn reject_parent_change(
     named: &PostParents,
     stored: &PostParents,
 ) -> Result<(), EventProcessorError> {
-    let (named, stored) = (parent_keys(named), parent_keys(stored));
+    let (named, stored) = (
+        (parent_keys(named), &named.app_replied),
+        (parent_keys(stored), &stored.app_replied),
+    );
     if named == stored {
         return Ok(());
     }
@@ -183,11 +186,15 @@ async fn sync_put_details(
 
     // Read the parents back from the edges just written, so the relationships and the reply and
     // repost notifications carry each parent's stored address, the one a graph rebuild returns.
-    let PostParents { replied, reposted } = PostParents::get_from_graph(&author_id, &post_id)
+    let PostParents {
+        replied,
+        reposted,
+        app_replied,
+    } = PostParents::get_from_graph(&author_id, &post_id)
         .await?
         .unwrap_or_default();
     let mut post_relationships = PostRelationships {
-        replied: replied.as_ref().map(|parent| parent.uri.clone()),
+        replied: app_replied.or_else(|| replied.as_ref().map(|parent| parent.uri.clone())),
         reposted: reposted.as_ref().map(|parent| parent.uri.clone()),
         mentioned: Vec::new(),
     };
@@ -390,8 +397,9 @@ async fn recover_post_index_state(
     // the next read recomputes those counts from the now-durable graph edges.
     // Invalidate-only is sufficient and safe on missing keys. Run before the child
     // reindex below so a failure there still leaves the parent caches refreshed.
-    if let Some(PostParents { replied, reposted }) =
-        PostParents::get_from_graph(author_id, post_id).await?
+    if let Some(PostParents {
+        replied, reposted, ..
+    }) = PostParents::get_from_graph(author_id, post_id).await?
     {
         for PostParent { key, .. } in [replied, reposted].into_iter().flatten() {
             PostCounts::invalidate(&[&key.owner_id, &key.resource_id]).await?;
@@ -633,10 +641,13 @@ pub async fn del(key: ResourceKey, ingestor: &UserIngestor) -> Result<(), EventP
     match execute_graph_operation(query).await? {
         OperationOutcome::CreatedOrDeleted => sync_del(key.owner_id, key.resource_id, uri).await?,
         OperationOutcome::Updated => {
-            let PostParents { replied, reposted } =
-                PostParents::get_from_graph(&key.owner_id, &key.resource_id)
-                    .await?
-                    .unwrap_or_default();
+            let PostParents {
+                replied,
+                reposted,
+                app_replied,
+            } = PostParents::get_from_graph(&key.owner_id, &key.resource_id)
+                .await?
+                .unwrap_or_default();
             let reference = |PostParent { uri, key }| Reference {
                 uri,
                 target: ReferenceTarget::Post(key),
@@ -647,7 +658,9 @@ pub async fn del(key: ResourceKey, ingestor: &UserIngestor) -> Result<(), EventP
             let tombstone = PostInput {
                 uri,
                 content: String::new(),
-                parent: replied.map(reference),
+                parent: replied.map(reference).or_else(|| {
+                    app_replied.map(|uri| crate::events::route::resolve_reference(&uri))
+                }),
                 embed: reposted.map(reference),
                 collection_items: Vec::new(),
                 kind: PostKind::Short,
@@ -701,7 +714,11 @@ pub async fn sync_del(
     // The parents to clean up come from the graph, which still has the post because
     // the graph delete runs LAST. Read them before removing the gate, for the same
     // reason as the kind above.
-    let PostParents { replied, reposted } = PostParents::get_from_graph(&author_id, &post_id)
+    let PostParents {
+        replied,
+        reposted,
+        app_replied,
+    } = PostParents::get_from_graph(&author_id, &post_id)
         .await?
         .unwrap_or_default();
 
@@ -715,7 +732,7 @@ pub async fn sync_del(
     // If the post is a reply, cannot delete from the main feeds
     // In the main feed, we just include the root posts and reposts
     // It could be a situation that relationship would not exist and we will treat the post as a not reply
-    let is_reply = replied.is_some();
+    let is_reply = replied.is_some() || app_replied.is_some();
 
     // DELETE TO INDEX - PHASE 1, remove the post counts
     // Idempotent: JSON DEL + ZREM from engagement sorted set.
@@ -937,7 +954,11 @@ mod tests {
     }
 
     fn parents(replied: Option<PostParent>, reposted: Option<PostParent>) -> PostParents {
-        PostParents { replied, reposted }
+        PostParents {
+            replied,
+            reposted,
+            app_replied: None,
+        }
     }
 
     #[test]

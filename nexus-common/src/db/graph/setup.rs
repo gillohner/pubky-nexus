@@ -31,6 +31,7 @@ async fn setup_graph_inner() -> GraphResult<()> {
     // User.id / Post.id / File.(owner_id,id) / Homeserver.id need no CREATE INDEX:
     // the UNIQUE constraints above already create a backing index for them.
     let indexes = [
+        "CREATE INDEX resourceAppNamespaceTime IF NOT EXISTS FOR (p:Resource) ON (p.namespace, p.app_indexed_at)",
         "CREATE INDEX postTimestampIndex IF NOT EXISTS FOR (p:Post) ON (p.indexed_at)",
         "CREATE INDEX postKindIndex IF NOT EXISTS FOR (p:Post) ON (p.kind)",
         "CREATE INDEX taggedLabelIndex IF NOT EXISTS FOR ()-[r:TAGGED]-() ON (r.label)",

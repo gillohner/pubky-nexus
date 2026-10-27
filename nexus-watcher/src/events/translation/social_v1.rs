@@ -13,10 +13,11 @@ use crate::events::inputs::{
 };
 use crate::events::route::resolve_reference;
 use crate::events::translation::{TranslatedDel, TranslatedPut};
+use nexus_common::models::app_post::{AppPostInput, AppPostUri};
 use pubky_social_specs::{
     epoch_segment, post_uri_builder, ParsedUri, PubkyId, PubkySocialCollectionContent,
     PubkySocialObject, PubkySocialPost, PubkySocialPostKind, PubkySocialTag, PubkySocialUser,
-    PubkySocialUserLink, Resource, ValidationCtx,
+    PubkySocialUserLink, Resource, ValidationCtx, Visibility,
 };
 
 /// Reads `bytes` with the v1 reader for the resource `parsed` names, under the root of the
@@ -36,6 +37,27 @@ pub fn translate_put(
 ) -> Result<TranslatedPut, EventProcessorError> {
     if !has_handler(&parsed.resource) {
         return Err(no_handler(&parsed.resource));
+    }
+    if let (Resource::Post { id, .. }, Visibility::Public) = (&parsed.resource, &parsed.visibility)
+    {
+        let path = AppPostUri::parse_social(event_uri).ok_or_else(|| {
+            EventProcessorError::SpecValidation("Invalid social post path".into())
+        })?;
+        let envelope = path
+            .read(bytes)
+            .map_err(EventProcessorError::SpecValidation)?;
+        let kind: PubkySocialPostKind =
+            serde_json::from_value(serde_json::Value::String(envelope.kind.0.clone()))
+                .map_err(|e| EventProcessorError::SpecValidation(e.to_string()))?;
+        if matches!(kind, PubkySocialPostKind::Unknown(_)) {
+            // Unknown social tokens retain the Unknown storage kind until the
+            // pinned reader knows their content semantics.
+            return Ok(TranslatedPut::Post {
+                key: owned_key(parsed.user_id.clone(), id),
+                post: PostInput::from_open_v1(envelope, &parsed.user_id, id),
+            });
+        }
+        // Known kinds still use their pinned semantic validation (e.g. collections).
     }
     let ctx = ValidationCtx {
         root: parsed.visibility.root(),
@@ -173,6 +195,22 @@ impl From<PubkySocialUserLink> for UserLink {
 }
 
 impl PostInput {
+    fn from_open_v1(post: AppPostInput, author: &PubkyId, post_id: &str) -> Self {
+        Self {
+            uri: post_uri_builder(author.to_string(), post_id.to_string()),
+            collection_items: Vec::new(),
+            parent: post.parent.as_deref().map(resolve_reference),
+            embed: post.embed.as_deref().map(resolve_reference),
+            content: post.content,
+            kind: PostKind::Unknown,
+            attachments: post
+                .attachments
+                .into_iter()
+                .map(|attachment| attachment.uri)
+                .collect(),
+            lock: post.lock,
+        }
+    }
     /// The input for a version of `author`'s post `post_id`, stored under the versionless post
     /// address whatever version the event named, with its parent, embed and collection items
     /// resolved; the attachments as their addresses, `alt` and `name` dropped.
@@ -595,19 +633,8 @@ mod tests {
 
     #[test]
     fn post_with_an_unrecognised_kind_carries_the_unknown_kind() {
-        // The reader reads the kind as unknown and then rejects the post, so read it directly.
         let bytes = br#"{"content": "hello", "kind": "hyperverse_post", "attachments": []}"#;
-        let put = put_at(&version_uri(None), bytes);
-        assert!(
-            matches!(put, Err(EventProcessorError::SpecValidation(_))),
-            "{put:?}"
-        );
-        let post: PubkySocialPost = serde_json::from_slice(bytes).unwrap();
-        assert_eq!(
-            post.kind,
-            PubkySocialPostKind::Unknown("hyperverse_post".to_string())
-        );
-        let input = PostInput::from_v1(post, &pubky_id(USER), POST_ID);
+        let (_, input) = translate_post(bytes);
         assert_eq!(input.kind, PostKind::Unknown);
         assert_eq!(
             input.into_details(&key(POST_ID)).kind,
