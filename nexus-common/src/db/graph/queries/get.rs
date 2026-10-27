@@ -40,6 +40,7 @@ pub fn get_post_by_id(author_id: &str, post_id: &str) -> Query {
                 kind: COALESCE(p.kind, 'short'),
                 attachments: p.attachments,
                 lock: p.lock,
+                app_parent: p.app_parent,
                 // Posts written before the flag lack the property and are live
                 deleted: COALESCE(p.deleted, false)
             } as details,
@@ -70,7 +71,7 @@ pub fn post_counts(author_id: &str, post_id: &str) -> Query {
                 reposts: COUNT { (p)<-[:REPOSTED]-() },
                 collections: COUNT { (p)<-[:COLLECTED]-() }
             } AS counts,
-            EXISTS { (p)-[:REPLIED]->(:Post) } AS is_reply
+            (p.app_parent IS NOT NULL OR EXISTS { (p)-[:REPLIED]->(:Post) }) AS is_reply
     ",
     )
     .param("author_id", author_id)
@@ -183,9 +184,11 @@ pub fn get_tag_target(user_id: &str, tag_id: &str, app: Option<&str>) -> Query {
               CASE WHEN target:Post THEN author.id ELSE null END AS author_id,
               CASE WHEN target:Post THEN target.uri ELSE null END AS post_uri,
               CASE WHEN target:Resource THEN target.id ELSE null END AS resource_id,
+              CASE WHEN target:Resource THEN target.uri ELSE null END AS resource_uri,
+              tag.indexed_at AS tag_indexed_at,
               tag.label AS label,
               tag.app AS app
-         RETURN user_id, post_id, author_id, post_uri, resource_id, label, app"
+         RETURN user_id, post_id, author_id, post_uri, resource_id, resource_uri, tag_indexed_at, label, app"
     );
 
     let mut query = Query::new("get_tag_target", &cypher)
@@ -197,6 +200,18 @@ pub fn get_tag_target(user_id: &str, tag_id: &str, app: Option<&str>) -> Query {
     }
 
     query
+}
+
+/// Stored time of a resource tag, including a normalization-equivalent replay
+/// whose raw URI produced a different object ID.
+pub fn get_resource_tag_indexed_at(
+    author: &str,
+    resource_id: &str,
+    label: &str,
+    app: &str,
+) -> Query {
+    Query::new("get_resource_tag_indexed_at", "MATCH (:User {id: $author})-[t:TAGGED {label: $label, app: $app}]->(:Resource {id: $resource_id}) RETURN t.indexed_at AS tag_indexed_at")
+        .param("author", author).param("resource_id", resource_id).param("label", label).param("app", app)
 }
 
 // t.id collides across taggers (hashes only {target_uri, label}), so the keyset is the row value
@@ -231,7 +246,7 @@ pub fn post_relationships(author_id: &str, post_id: &str) -> Query {
         OPTIONAL MATCH (p)-[:REPOSTED]->(reposted_post:Post)<-[:AUTHORED]-(reposted_author:User)
         OPTIONAL MATCH (p)-[:MENTIONED]->(mentioned_user:User)
         RETURN
-          replied_post.uri AS replied_uri,
+          coalesce(p.app_parent, replied_post.uri) AS replied_uri,
           reposted_post.uri AS reposted_uri,
           COLLECT(mentioned_user.id) AS mentioned_user_ids",
     )
@@ -248,6 +263,7 @@ pub fn post_parents(author_id: &str, post_id: &str) -> Query {
         OPTIONAL MATCH (p)-[:REPLIED]->(replied_post:Post)<-[:AUTHORED]-(replied_author:User)
         OPTIONAL MATCH (p)-[:REPOSTED]->(reposted_post:Post)<-[:AUTHORED]-(reposted_author:User)
         RETURN
+          p.app_parent AS app_replied,
           replied_post.uri AS replied_uri,
           replied_author.id AS replied_author_id,
           replied_post.id AS replied_post_id,
@@ -432,7 +448,7 @@ pub fn author_post_entries(author_id: &str, after: (i64, &str), limit: usize) ->
         RETURN author.id AS author_id,
             p.id AS post_id,
             p.indexed_at AS indexed_at,
-            EXISTS { (p)-[:REPLIED]->(:Post) } AS is_reply,
+            (p.app_parent IS NOT NULL OR EXISTS { (p)-[:REPLIED]->(:Post) }) AS is_reply,
             COLLECT { MATCH (p)<-[tag:TAGGED]-(:User) RETURN DISTINCT tag.label } AS labels,
             COUNT { (p)<-[:TAGGED]-() }
                 + COUNT { (p)<-[:REPLIED]-() }
@@ -760,7 +776,12 @@ pub fn resource_stream(
         SortOrder::Ascending => (">=", "<="),
     };
 
-    let mut cypher = String::from("MATCH (tagger:User)-[t:TAGGED]->(r:Resource)\n");
+    let mut cypher =
+        if matches!(sorting, ResourceSorting::Rating) && app.is_none() && labels.is_none() {
+            String::from("MATCH (r:Resource)\n")
+        } else {
+            String::from("MATCH (tagger:User)-[t:TAGGED]->(r:Resource)\n")
+        };
 
     let mut where_clauses = Vec::new();
     if app.is_some() {
@@ -777,6 +798,7 @@ pub fn resource_stream(
 
     let score_expr = match sorting {
         ResourceSorting::Timeline => "MAX(t.indexed_at)",
+        ResourceSorting::Rating => "coalesce(r.rating_avg,0.0)",
     };
     cypher.push_str(&format!("WITH r, {score_expr} AS score\n"));
 
@@ -1034,7 +1056,7 @@ const USER_COUNT_FIELDS: &[(&str, &str)] = &[
     ("posts", POSTS_COUNT),
     (
         "replies",
-        "COUNT { (u)-[:AUTHORED]->(:Post)-[:REPLIED]->(:Post) }",
+        "COUNT { (u)-[:AUTHORED]->(reply:Post) WHERE reply.app_parent IS NOT NULL OR EXISTS { (reply)-[:REPLIED]->(:Post) } }",
     ),
     (
         "collections",
@@ -1665,7 +1687,7 @@ pub fn post_stream(
     if !matches!(source, StreamSource::Bookmarks { .. }) {
         append_condition(
             &mut cypher,
-            "NOT ( (p)-[:REPLIED]->(:Post) )",
+            "p.app_parent IS NULL AND NOT ( (p)-[:REPLIED]->(:Post) )",
             &mut where_clause_applied,
         );
     }
@@ -1711,7 +1733,7 @@ pub fn post_stream(
         (Some(rule), StreamSorting::Timeline) => cypher.push_str(&format!(
             "WITH DISTINCT p\nORDER BY p.indexed_at {order_dir}, p.id {order_dir}\nMATCH (p)<-[:AUTHORED]-(author:User)\nWHERE {rule}\n"
         )),
-        (Some(rule), StreamSorting::TotalEngagement) => cypher.push_str(&format!(
+        (Some(rule), StreamSorting::TotalEngagement | StreamSorting::Rating) => cypher.push_str(&format!(
             "WITH DISTINCT p\nMATCH (p)<-[:AUTHORED]-(author:User)\nWHERE {rule}\n"
         )),
         (None, _) => cypher.push_str("WITH DISTINCT p, author\n"),
@@ -1723,6 +1745,28 @@ pub fn post_stream(
     // within a response (pagination across ties is still best-effort: the cursor
     // carries only the score, not the id).
     let (score_expr, order_clause) = match sorting {
+        StreamSorting::Rating => {
+            cypher.push_str("WITH p, author, coalesce(p.rating_avg,0.0) AS rating_score\n");
+            where_clause_applied = false;
+            if pagination.start.is_some() {
+                append_condition(
+                    &mut cypher,
+                    &format!("rating_score {start_op} $start"),
+                    &mut where_clause_applied,
+                );
+            }
+            if pagination.end.is_some() {
+                append_condition(
+                    &mut cypher,
+                    &format!("rating_score {end_op} $end"),
+                    &mut where_clause_applied,
+                );
+            }
+            (
+                "rating_score",
+                format!("ORDER BY rating_score {order_dir}, p.id {order_dir}"),
+            )
+        }
         StreamSorting::Timeline => (
             "p.indexed_at",
             format!("ORDER BY p.indexed_at {order_dir}, p.id {order_dir}"),
@@ -2098,9 +2142,7 @@ mod tests {
     #[test]
     fn post_stream_trust_rule_matches_authors_after_sorting_posts() {
         let tags = Some(vec!["a".to_string(), "b".to_string()]);
-        let kind = Some(KindFilter::Kind(
-            pubky_social_specs::legacy_v0::PubkyAppPostKind::Short,
-        ));
+        let kind = Some(KindFilter::Kind(crate::models::post::PostKind::Short));
         let cypher = all_stream(
             StreamSorting::Timeline,
             &tags,
@@ -2112,7 +2154,7 @@ mod tests {
         let clauses = [
             "MATCH (:User)-[tag:TAGGED]->(p)",
             "p.kind = 'short'",
-            "NOT ( (p)-[:REPLIED]->(:Post) )",
+            "p.app_parent IS NULL AND NOT ( (p)-[:REPLIED]->(:Post) )",
             "WITH DISTINCT p\nORDER BY p.indexed_at DESC, p.id DESC",
             "MATCH (p)<-[:AUTHORED]-(author:User)",
             &rule,
@@ -2124,9 +2166,7 @@ mod tests {
     /// Engagement sorting drops hidden authors before counting engagement.
     #[test]
     fn post_stream_trust_rule_filters_engagement_streams() {
-        let kind = Some(KindFilter::Kind(
-            pubky_social_specs::legacy_v0::PubkyAppPostKind::Short,
-        ));
+        let kind = Some(KindFilter::Kind(crate::models::post::PostKind::Short));
         let ranked = Some(TrustRule::Ranked);
         let cypher = all_stream(StreamSorting::TotalEngagement, &None, kind, ranked);
         let rule = format!("WHERE {}", ranked_user("author"));

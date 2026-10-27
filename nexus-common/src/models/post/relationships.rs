@@ -106,6 +106,7 @@ pub struct PostParent {
 pub struct PostParents {
     pub replied: Option<PostParent>,
     pub reposted: Option<PostParent>,
+    pub app_replied: Option<String>,
 }
 
 impl PostParents {
@@ -135,6 +136,7 @@ impl PostParents {
         Ok(Some(Self {
             replied: parent("replied")?,
             reposted: parent("reposted")?,
+            app_replied: row.get::<Option<String>>("app_replied")?,
         }))
     }
 }

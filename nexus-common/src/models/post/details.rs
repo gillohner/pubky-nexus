@@ -4,8 +4,8 @@ use crate::db::{
     execute_graph_operation, fetch_row_from_graph, queries, GraphResult, OperationOutcome, RedisOps,
 };
 use crate::models::error::ModelResult;
+use crate::models::post::PostKind as PubkyAppPostKind;
 use crate::models::ResourceKey;
-use pubky_social_specs::legacy_v0::PubkyAppPostKind;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -21,6 +21,9 @@ pub struct PostDetails {
     pub author: String,
     pub kind: PubkyAppPostKind,
     pub uri: String,
+    /// Logical app parent. Kept after that app node is deleted so the post remains a reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_parent: Option<String>,
     pub attachments: Option<Vec<String>>,
     /// `pubky://` URL of the lock server; `None` when the post is unlocked.
     /// `default` keeps pre-lock cached JSON (no `lock` key) deserializing.
@@ -91,6 +94,10 @@ impl PostDetails {
         if is_edit {
             return Ok(());
         }
+        if self.app_parent.is_some() {
+            PostStream::add_to_replies_per_user_sorted_set(self).await?;
+            return Ok(());
+        }
         // Replies are not indexed in the global feeds — they live in the
         // per-parent reply set instead.
         match parent_key_wrapper {
@@ -156,9 +163,10 @@ impl PostDetails {
                     post_id,
                 )
                 .await?;
-                PostStream::remove_from_replies_per_user_sorted_set(author_id, post_id).await?;
             }
         }
+        // Includes app replies whose parent has no social (author, post-id) key.
+        PostStream::remove_from_replies_per_user_sorted_set(author_id, post_id).await?;
         Ok(())
     }
 
@@ -179,7 +187,7 @@ impl PostDetails {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pubky_social_specs::legacy_v0::PubkyAppPostKind;
+    use crate::models::post::PostKind as PubkyAppPostKind;
 
     #[tokio_shared_rt::test(shared)]
     async fn test_is_different_than() {
@@ -194,6 +202,7 @@ mod tests {
             attachments: Some(vec!["image1.jpg".into(), "image2.jpg".into()]),
             lock: None,
             deleted: false,
+            app_parent: None,
         };
 
         // Test with same content and attachments
@@ -290,6 +299,7 @@ mod tests {
             attachments: None,
             lock: None,
             deleted: false,
+            app_parent: None,
         };
         let locked = PostDetails {
             lock: Some("pubky://host/pub/lock".into()),

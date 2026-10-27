@@ -57,7 +57,7 @@ impl Moderation {
                 info!("Moderation tag '{label}' detected. Deleting user profile {user_id}");
                 handlers::user::del(user_id).await
             }
-            ReferenceTarget::Other => {
+            ReferenceTarget::Other | ReferenceTarget::AppPost(_) => {
                 debug!("Moderation tag '{label}' on {uri} names nothing Nexus deletes");
                 Ok(())
             }
@@ -100,7 +100,9 @@ impl Moderation {
             ReferenceTarget::Post(key) => handlers::post::del(key, ingestor).await,
             ReferenceTarget::Tag { key, app } => handlers::tag::del(key, app).await,
             ReferenceTarget::File(key) => handlers::file::del(key, files_path).await,
-            ReferenceTarget::User(_) | ReferenceTarget::Other => Ok(()),
+            ReferenceTarget::User(_) | ReferenceTarget::Other | ReferenceTarget::AppPost(_) => {
+                Ok(())
+            }
         }
     }
 }

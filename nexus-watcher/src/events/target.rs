@@ -1,3 +1,4 @@
+use nexus_common::models::app_post::AppPostUri;
 use pubky_social_specs::legacy_v0::ExtendedParsedUri;
 use pubky_social_specs::{ParsedUri, PubkyId};
 
@@ -8,11 +9,12 @@ use pubky_social_specs::{ParsedUri, PubkyId};
 /// resource matches on it, so a third epoch fails to compile there and forces a decision.
 #[derive(Debug, Clone)]
 pub enum EventTarget {
+    /// A stored version of an app-owned v1 post.
+    AppPost(AppPostUri),
     /// A `pubky.app` path or another app's universal tag (`/pub/mapky/tags/…`), parsed by the
     /// frozen v0 reader.
     Legacy(ExtendedParsedUri),
-    /// A `/pub/social/v1/…` path parsed by the v1 parser. Only the router builds it: the
-    /// classifier still skips every `social/v1` event before the fetch.
+    /// A `/pub/social/v1/…` path parsed by the v1 parser. The classifier enables public profiles, stored post versions, follows and tags.
     Social(ParsedUri),
 }
 
@@ -22,6 +24,7 @@ impl EventTarget {
         match self {
             Self::Legacy(parsed) => parsed.user_id(),
             Self::Social(parsed) => &parsed.user_id,
+            Self::AppPost(parsed) => &parsed.author,
         }
     }
 
@@ -30,6 +33,7 @@ impl EventTarget {
         match self {
             Self::Legacy(parsed) => parsed.resource().to_string(),
             Self::Social(parsed) => parsed.resource.to_string(),
+            Self::AppPost(_) => "posts".into(),
         }
     }
 
@@ -41,6 +45,7 @@ impl EventTarget {
         match self {
             Self::Legacy(parsed) => parsed.resource().id().unwrap_or_default(),
             Self::Social(parsed) => parsed.resource.id().unwrap_or_default(),
+            Self::AppPost(parsed) => parsed.id.clone(),
         }
     }
 
@@ -54,6 +59,7 @@ impl EventTarget {
         let canonical = match self {
             Self::Legacy(parsed) => parsed.try_to_uri_str(),
             Self::Social(parsed) => parsed.try_to_uri_str(),
+            Self::AppPost(parsed) => Ok(parsed.version_uri()),
         };
         canonical.is_ok_and(|canonical| canonical == uri)
     }

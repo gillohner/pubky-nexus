@@ -11,13 +11,14 @@ use crate::routes::Query;
 use crate::{Error, Result as AppResult};
 use axum::Json;
 use nexus_common::db::kv::SortOrder;
+use nexus_common::models::app_post::{valid_kind, valid_namespace, AppPost};
+use nexus_common::models::post::PostKind as PubkyAppPostKind;
 use nexus_common::types::StreamSorting;
 use nexus_common::{
     models::post::{KindFilter, PostKeyStream, PostStream, StreamSource},
     types::{DomainTrust, WotDepth},
 };
-use pubky_social_specs::legacy_v0::PubkyAppPostKind;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 use utoipa::{OpenApi, ToSchema};
 
@@ -199,8 +200,9 @@ pub struct PostStreamQuery {
     #[serde(default, deserialize_with = "parse_string_to_u8")]
     pub depth: Option<u8>,
     pub domain_tags: Option<Tags>,
-    pub kind: Option<PubkyAppPostKind>,
-    pub exclude_kinds: Option<PostKinds>,
+    pub namespace: Option<String>,
+    pub kind: Option<String>,
+    pub exclude_kinds: Option<String>,
     #[serde(default)]
     pub include_attachment_metadata: bool,
 }
@@ -223,12 +225,69 @@ impl PostStreamQuery {
 
     /// Maps the mutually exclusive `kind` / `exclude_kinds` params (enforced
     /// by `validate_source_compat`) to the internal filter.
-    pub fn kind_filter(&self) -> Option<KindFilter> {
+    pub fn kind_filter(&self) -> AppResult<Option<KindFilter>> {
         match (&self.kind, &self.exclude_kinds) {
-            (Some(kind), _) => Some(KindFilter::Kind(kind.clone())),
-            (None, Some(exclude)) => Some(KindFilter::Exclude(exclude.0.clone())),
-            (None, None) => None,
+            (Some(kind), _) => Ok(Some(KindFilter::Kind(
+                serde_json::from_value(serde_json::Value::String(kind.clone()))
+                    .map_err(|e| Error::invalid_input(e.to_string()))?,
+            ))),
+            (None, Some(exclude)) => {
+                let parsed: PostKinds =
+                    serde_json::from_value(serde_json::Value::String(exclude.clone()))
+                        .map_err(|e| Error::invalid_input(e.to_string()))?;
+                Ok(Some(KindFilter::Exclude(parsed.0)))
+            }
+            (None, None) => Ok(None),
         }
+    }
+
+    fn app_namespace(&self) -> Option<&str> {
+        self.namespace
+            .as_deref()
+            .filter(|ns| !matches!(*ns, "pubky.app" | "social"))
+    }
+
+    fn app_exclusions(&self) -> AppResult<Vec<String>> {
+        let Some(raw) = &self.exclude_kinds else {
+            return Ok(vec![]);
+        };
+        let kinds: Vec<String> = raw.split(',').map(|s| s.trim().to_owned()).collect();
+        if kinds.is_empty() || kinds.len() > 32 || kinds.iter().any(|s| !valid_kind(s)) {
+            return Err(Error::invalid_input(
+                "App exclude_kinds requires 1–32 lowercase tokens",
+            ));
+        }
+        Ok(kinds)
+    }
+
+    fn validate_app_stream(&self) -> AppResult<()> {
+        if !valid_namespace(self.app_namespace().unwrap_or_default()) {
+            return Err(Error::invalid_input("Invalid app namespace"));
+        }
+        if self.kind.as_ref().is_some_and(|kind| !valid_kind(kind)) {
+            return Err(Error::invalid_input(
+                "App kind must be a lowercase token of 1–32 bytes",
+            ));
+        }
+        self.app_exclusions()?;
+        if !matches!(
+            self.source,
+            StreamSourceKind::All | StreamSourceKind::Author
+        ) || matches!(
+            self.sorting,
+            Some(StreamSorting::TotalEngagement | StreamSorting::Rating)
+        ) || self.tags.is_some()
+            || self.domain_tags.is_some()
+            || self.post_id.is_some()
+            || self.observer_id.is_some()
+            || self.depth.is_some()
+            || self.include_attachment_metadata
+            || self.viewer_id.is_some()
+        {
+            return Err(Error::invalid_input("App streams support all/author sources and timeline sorting, without social graph, tag, or attachment hydration parameters"));
+        }
+        self.build_source()?;
+        Ok(())
     }
 
     pub fn extract_stream_params(&self) -> AppResult<(StreamSource, StreamSorting, SortOrder)> {
@@ -247,6 +306,10 @@ impl PostStreamQuery {
                 "`kind` and `exclude_kinds` are mutually exclusive",
             ));
         }
+        if self.app_namespace().is_some() {
+            return self.validate_app_stream();
+        }
+        self.kind_filter()?;
         // Reply streams are served by dedicated sorted sets; the Cypher
         // fallback that kind filters route to has no reply MATCH arm and
         // would silently return the author's parent posts instead.
@@ -289,23 +352,31 @@ impl PostStreamQuery {
     }
 }
 
+#[derive(Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum PostStreamResponse {
+    Social(PostStreamDetailed),
+    App(Vec<AppPost>),
+}
+
 #[utoipa::path(
     get,
     path = STREAM_POSTS_ROUTE,
     tag = "Stream",
     params(
+        ("namespace" = Option<String>, Query, description = "Absent, pubky.app or social: the social stream. Any app namespace of 1–32 ASCII lowercase letters, digits or hyphens, starting with a letter, selects app metadata on Resource nodes; id is the URI hash and post_id is the path timestamp ID. Supports source=all or author, timeline, kind/exclude_kinds and pagination. App posts never enter default streams."),
         ("source" = Option<StreamSourceKind>, Query, description = "Source of posts for streams with viewer (following, followers, friends, bookmarks, post_replies, author, author_replies, collection, post_collections, wot, wot_domain, all). For `source=post_collections`: provide `author_id` + `post_id` of a post; returns the Collection posts that curate it, newest first by default. `kind` and `exclude_kinds` are rejected with 400. Links are materialized when the Collection is written: an item indexed after the Collection that lists it is not linked until the Collection is edited. For `source=collection`: provide `author_id` + `post_id` of the Collection post; items are returned in curator order. `tags`, `kind`, `exclude_kinds`, `sorting`, `order`, `start`, `end` are all rejected with 400 (incompatible with the curator-ordered result set). Items whose underlying post is missing (deleted, not indexed) or whose URI is malformed/non-post are dropped during hydration; pages may be shorter than `limit`. Pagination via `skip`/`limit` is not stable across deletions, if an item is removed between page fetches, the same `skip` returns a different window. The FE can identify dropped items by diffing the response against the Collection envelope's `items[]`. When the instance filters by trust, posts by authors outside its trust ranking are left out of `all` (any `sorting`, `tags` or `kind`)."),
         ("viewer_id" = Option<PubkyId>, Query, description = "Viewer Pubky ID. Sets the viewer's relationship flags on the posts. On `source=all` with `sorting=timeline` and no `tags`, also brings back the viewer's own posts when the trust filter hides them"),
         ("observer_id" = Option<PubkyId>, Query, description = "Observer Pubky ID. The central point for streams with Reach"),
         ("author_id" = Option<PubkyId>, Query, description = "Filter posts by an specific author User ID"),
         ("post_id" = Option<PostId>, Query, description = "This parameter is needed when we want to retrieve the replies stream for a post"),
-        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline` or `total_engagement`). Ties are broken by post id; pagination across equal scores is best-effort."),
+        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline`, `total_engagement` or `rating`, the 1–10 average). Ties are broken by post id; pagination across equal scores is best-effort."),
         ("order" = Option<SortOrder>, Query, description = "Ordering of response list. Either 'ascending' or 'descending'. Defaults to descending."),
         ("tags" = Option<Tags>, Query, description = "Filter by a list of comma-separated tags (max 5). E.g.,`&tags=dev,free,opensource`. Only posts matching at least one of the tags will be returned."),
         ("depth" = Option<u8>, Query, description = "WoT traversal depth. For `source=wot`: 1-3, default 2. For `source=wot_domain`: 0-3, default 2, where `depth=0` is the observer-only (\"Me\") trust set (posts by authors the observer tagged directly, no follow traversal). `depth=0` is invalid for `source=wot`. Ignored for other sources."),
         ("domain_tags" = Option<Tags>, Query, description = "Required for `source=wot_domain`. Comma-separated tag labels (max 5); returns posts by authors tagged with any of these by the observer's WoT, or by the observer alone when `depth=0`. E.g. `&domain_tags=bitcoiner,btc-dev`. Ignored for other sources."),
-        ("kind" = Option<PubkyAppPostKind>, Query, description = "Filter by post kind: short, long, image, video, link, file, collection. Mutually exclusive with `exclude_kinds`; rejected for `source=post_collections`, `source=post_replies` and `source=author_replies`."),
-        ("exclude_kinds" = Option<PostKinds>, Query, description = "Comma-separated post kinds to exclude server-side (1-7 items, duplicates ignored), e.g. `&exclude_kinds=collection,link`. Valid values: short, long, image, video, link, file, collection; anything else is rejected with 400. Mutually exclusive with `kind`; rejected for `source=collection`, `source=post_collections`, `source=post_replies` and `source=author_replies`. Posts with a missing or unrecognized kind are never excluded."),
+        ("kind" = Option<String>, Query, description = "With an app namespace, any lowercase app kind token (1–32 bytes). Otherwise filter by social post kind: short, long, image, video, link, file, collection. Mutually exclusive with `exclude_kinds`; rejected for `source=post_collections`, `source=post_replies` and `source=author_replies`."),
+        ("exclude_kinds" = Option<String>, Query, description = "With an app namespace, 1–32 lowercase app kind tokens. Otherwise comma-separated social post kinds to exclude server-side (1-7 items, duplicates ignored), e.g. `&exclude_kinds=collection,link`. Valid values: short, long, image, video, link, file, collection; anything else is rejected with 400. Mutually exclusive with `kind`; rejected for `source=collection`, `source=post_collections`, `source=post_replies` and `source=author_replies`. Posts with a missing or unrecognized kind are never excluded."),
         ("skip" = Option<BoundedSkip<10_000>>, Query, description = "Skip N posts (max 10000)"),
         ("limit" = Option<BoundedLimit<10, 50>>, Query, description = "Retrieve N posts (1–50, default 10)"),
         ("start" = Option<f64>, Query, description = "The start of the stream timeframe or score. Posts with a timestamp/score greater than this value will be excluded from the results"),
@@ -313,7 +384,7 @@ impl PostStreamQuery {
         ("include_attachment_metadata" = Option<bool>, Query, description = "Include file metadata for post attachments"),
     ),
     responses(
-        (status = 200, description = "Posts stream", body = PostStreamDetailed),
+        (status = 200, description = "Social post views, or app metadata for an explicit namespace", body = PostStreamResponse),
         (status = 400, description = "Invalid parameters"),
         (status = 429, description = "Rate limit exceeded", headers(("Retry-After" = u64, description = "Seconds until retry"))),
         (status = 500, description = "Internal server error")
@@ -337,10 +408,23 @@ Ensure that you provide the necessary parameters based on the selected `source`.
 )]
 pub async fn stream_posts_handler(
     Query(mut query): Query<PostStreamQuery>,
-) -> AppResult<Json<PostStreamDetailed>> {
+) -> AppResult<Json<PostStreamResponse>> {
     debug!("GET {STREAM_POSTS_ROUTE}");
 
     query.validate_source_compat()?; // before initialize_defaults
+    if let Some(namespace) = query.app_namespace() {
+        let posts = AppPost::stream(
+            namespace,
+            query.kind.as_deref(),
+            &query.app_exclusions()?,
+            query.author_id.as_deref(),
+            query.pagination.to_pagination(query.start, query.end),
+            matches!(query.order, Some(SortOrder::Ascending)),
+        )
+        .await
+        .map_err(nexus_common::models::error::ModelError::from)?;
+        return Ok(Json(PostStreamResponse::App(posts)));
+    }
     query.initialize_defaults();
     let pagination = query.pagination.to_pagination(query.start, query.end);
     let (source, sorting, order) = query.extract_stream_params()?;
@@ -354,14 +438,16 @@ pub async fn stream_posts_handler(
         sorting,
         query.viewer_id.as_deref(),
         tags,
-        query.kind_filter(),
+        query.kind_filter()?,
     )
     .await?
     {
-        Some(stream) => Ok(Json(
+        Some(stream) => Ok(Json(PostStreamResponse::Social(
             PostStreamDetailed::from_post_views(stream.0, include_attachment_metadata).await?,
-        )),
-        None => Ok(Json(PostStreamDetailed::default())),
+        ))),
+        None => Ok(Json(PostStreamResponse::Social(
+            PostStreamDetailed::default(),
+        ))),
     }
 }
 
@@ -375,7 +461,7 @@ pub async fn stream_posts_handler(
         ("observer_id" = Option<PubkyId>, Query, description = "Observer Pubky ID. The central point for streams with Reach"),
         ("author_id" = Option<PubkyId>, Query, description = "Filter posts by an specific author User ID"),
         ("post_id" = Option<PostId>, Query, description = "This parameter is needed when we want to retrieve the replies stream for a post"),
-        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline` or `total_engagement`). Ties are broken by post id; pagination across equal scores is best-effort."),
+        ("sorting" = Option<StreamSorting>, Query, description = "Sort method (`timeline`, `total_engagement` or `rating`, the 1–10 average). Ties are broken by post id; pagination across equal scores is best-effort."),
         ("order" = Option<SortOrder>, Query, description = "Ordering of response list. Either 'ascending' or 'descending'. Defaults to descending."),
         ("tags" = Option<Tags>, Query, description = "Filter by a list of comma-separated tags (max 5). E.g.,`&tags=dev,free,opensource`. Only posts matching at least one of the tags will be returned."),
         ("depth" = Option<u8>, Query, description = "WoT traversal depth. For `source=wot`: 1-3, default 2. For `source=wot_domain`: 0-3, default 2, where `depth=0` is the observer-only (\"Me\") trust set (posts by authors the observer tagged directly, no follow traversal). `depth=0` is invalid for `source=wot`. Ignored for other sources."),
@@ -413,6 +499,9 @@ pub async fn stream_post_keys_handler(
     Query(mut query): Query<PostStreamQuery>,
 ) -> AppResult<Json<PostKeyStream>> {
     debug!("GET {STREAM_POST_KEYS_ROUTE}");
+    if query.app_namespace().is_some() {
+        return Err(Error::invalid_input("App metadata is available through /v0/stream/posts?namespace=; social post keys cannot encode an app namespace"));
+    }
 
     query.validate_source_compat()?; // before initialize_defaults
     query.initialize_defaults();
@@ -427,7 +516,7 @@ pub async fn stream_post_keys_handler(
         sorting,
         query.viewer_id.as_deref(),
         tags,
-        query.kind_filter(),
+        query.kind_filter()?,
     )
     .await?
     {

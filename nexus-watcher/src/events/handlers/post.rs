@@ -5,12 +5,12 @@ use nexus_common::db::queries;
 use nexus_common::db::queries::get::post_is_safe_to_delete;
 use nexus_common::db::{exec_single_row, execute_graph_operation, OperationOutcome};
 use nexus_common::models::notification::{Notification, PostChangedSource, PostChangedType};
+use nexus_common::models::post::PostKind as PubkyAppPostKind;
 use nexus_common::models::post::{
     collection_item_keys, sync_collected_edges, PostCounts, PostDetails, PostParent, PostParents,
     PostRelationships, PostStream,
 };
-use nexus_common::models::user::{UserCounts, UserIngestor};
-use pubky_social_specs::legacy_v0::PubkyAppPostKind;
+use nexus_common::models::user::UserIngestor;
 use pubky_social_specs::PubkyId;
 use tracing::{debug, Instrument};
 
@@ -25,12 +25,68 @@ pub async fn sync_put(
     ingestor: &UserIngestor,
 ) -> Result<(), EventProcessorError> {
     reject_unsupported_parent(&post)?;
+    let is_social = post.uri.contains("/pub/social/v1/posts/");
+    let projection = if is_social {
+        nexus_common::models::social_event::SocialContent::read(
+            post.kind.clone(),
+            &post.content,
+            chrono::Utc::now(),
+        )?
+    } else {
+        nexus_common::models::social_event::SocialContent::Other
+    };
+    if post.kind == PostKind::Rsvp {
+        let parent = post.parent.as_ref().ok_or_else(|| {
+            EventProcessorError::SpecValidation("RSVP requires an event parent".into())
+        })?;
+        let ReferenceTarget::Post(parent_key) = &parent.target else {
+            return Err(EventProcessorError::SpecValidation(
+                "RSVP parent must be a social event".into(),
+            ));
+        };
+        match nexus_common::models::social_event::validate_parent(&parent.uri).await? {
+            Some(true) => {}
+            Some(false) => {
+                return Err(EventProcessorError::SpecValidation(
+                    "RSVP parent is not an event".into(),
+                ))
+            }
+            None => {
+                fail_on_permanent_ingest_error(
+                    ingestor.maybe_ingest_user(&parent_key.owner_id).await,
+                )?;
+                return Err(EventProcessorError::missing_dependencies(vec![parent
+                    .uri
+                    .clone()]));
+            }
+        }
+    }
+    let source_content = post.content.clone();
+    let source_parent = post.parent.as_ref().map(|r| r.uri.clone());
     let post_details = post.clone().into_details(&key);
     let ResourceKey {
         owner_id: author_id,
         resource_id: post_id,
     } = key;
-    sync_put_details(post, post_details, author_id, post_id, ingestor).await
+    sync_put_details(
+        post,
+        post_details,
+        author_id.clone(),
+        post_id.clone(),
+        ingestor,
+    )
+    .await?;
+    if is_social {
+        nexus_common::models::social_event::sync(
+            &author_id,
+            &post_id,
+            &source_content,
+            source_parent.as_deref(),
+            &projection,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Rejects a reply to a file, a profile or a `pubky.app` tag as
@@ -38,6 +94,9 @@ pub async fn sync_put(
 /// one. A reply to a URL or another app's object, its tags included, is indexed with no reply
 /// edge.
 fn reject_unsupported_parent(post: &PostInput) -> Result<(), EventProcessorError> {
+    if post.kind == PostKind::Rating {
+        return Ok(());
+    }
     match &post.parent {
         Some(Reference {
             uri,
@@ -62,7 +121,10 @@ fn reject_parent_change(
     named: &PostParents,
     stored: &PostParents,
 ) -> Result<(), EventProcessorError> {
-    let (named, stored) = (parent_keys(named), parent_keys(stored));
+    let (named, stored) = (
+        (parent_keys(named), &named.app_replied),
+        (parent_keys(stored), &stored.app_replied),
+    );
     if named == stored {
         return Ok(());
     }
@@ -139,11 +201,6 @@ async fn sync_put_details(
         match PostDetails::get_from_index(&author_id, &post_id).await? {
             Some(existing_details) => {
                 let was_collection = existing_details.kind == PubkyAppPostKind::Collection;
-                // Persist the new PostDetails (incl. kind) BEFORE moving the
-                // `collections` counter. If the counter moved first and a later
-                // step failed, a retry would re-read the old kind, see the same
-                // transition, and move the counter twice. Writing the kind first
-                // means a retry sees the new kind and the transition is gone.
                 let collection_toggled = was_collection != is_collection;
                 // `is_different_than` ignores kind, so refresh on a kind-only edit too.
                 let kind_changed = existing_details.kind != post_details.kind;
@@ -173,17 +230,12 @@ async fn sync_put_details(
                     )
                     .await?;
                 }
-                match (was_collection, is_collection) {
-                    (false, true) => UserCounts::increment(&author_id, "collections", None).await?,
-                    (true, false) => UserCounts::decrement(&author_id, "collections", None).await?,
-                    _ => {}
-                }
             }
             None => {
                 // Partial-failure recovery: graph already had the post but Redis is
                 // missing PostDetails. A previous sync_put attempt wrote the graph node
                 // but failed before completing the index writes. Re-run idempotent
-                // index writes only — counters/scores/notifications are intentionally
+                // index writes only — scores/notifications are intentionally
                 // skipped (prefer drift over duplicates).
                 recover_post_index_state(&author_id, &post_id).await?;
             }
@@ -193,11 +245,15 @@ async fn sync_put_details(
 
     // Read the parents back from the edges just written, so the relationships and the reply and
     // repost notifications carry each parent's stored address, the one a graph rebuild returns.
-    let PostParents { replied, reposted } = PostParents::get_from_graph(&author_id, &post_id)
+    let PostParents {
+        replied,
+        reposted,
+        app_replied,
+    } = PostParents::get_from_graph(&author_id, &post_id)
         .await?
         .unwrap_or_default();
     let mut post_relationships = PostRelationships {
-        replied: replied.as_ref().map(|parent| parent.uri.clone()),
+        replied: app_replied.or_else(|| replied.as_ref().map(|parent| parent.uri.clone())),
         reposted: reposted.as_ref().map(|parent| parent.uri.clone()),
         mentioned: Vec::new(),
     };
@@ -230,38 +286,21 @@ async fn sync_put_details(
         sync_collected_edges(&author_id, &post_id, &items, Some(&post_details)).await?;
     }
 
-    // SAVE TO INDEX - PHASE 1, update post counts
-    let indexing_results = nexus_common::traced_join!(
-        tracing::info_span!("index.write", phase = "post_counts");
-        // TODO: Use SCARD on a set for unique tag count to avoid race conditions in parallel processing
-        async {
-            if PostCounts::get_from_index(&author_id, &post_id)
+    // SAVE TO INDEX - PHASE 1, create the post counts
+    // TODO: Use SCARD on a set for unique tag count to avoid race conditions in parallel processing
+    async {
+        if PostCounts::get_from_index(&author_id, &post_id)
+            .await?
+            .is_none()
+        {
+            PostCounts::default()
+                .put_to_index(&author_id, &post_id, is_reply)
                 .await?
-                .is_none()
-            {
-                PostCounts::default()
-                    .put_to_index(&author_id, &post_id, is_reply)
-                    .await?
-            }
-            Ok::<(), EventProcessorError>(())
-        },
-        // TODO: Use SCARD on a set for unique tag count to avoid race conditions in parallel processing
-        // Update user counts with the new post
-        UserCounts::increment(&author_id, "posts", None),
-        async {
-            // reply XOR collection (collections forbid `parent`); never both.
-            if is_reply {
-                UserCounts::increment(&author_id, "replies", None).await?;
-            } else if is_collection {
-                UserCounts::increment(&author_id, "collections", None).await?;
-            };
-            Ok::<(), EventProcessorError>(())
         }
-    );
-
-    indexing_results.0?;
-    indexing_results.1?;
-    indexing_results.2?;
+        Ok::<(), EventProcessorError>(())
+    }
+    .instrument(tracing::info_span!("index.write", phase = "post_counts"))
+    .await?;
 
     // Use that index wrapper to add a post reply
     let mut reply_parent_post_key_wrapper: Option<(String, String)> = None;
@@ -417,8 +456,9 @@ async fn recover_post_index_state(
     // the next read recomputes those counts from the now-durable graph edges.
     // Invalidate-only is sufficient and safe on missing keys. Run before the child
     // reindex below so a failure there still leaves the parent caches refreshed.
-    if let Some(PostParents { replied, reposted }) =
-        PostParents::get_from_graph(author_id, post_id).await?
+    if let Some(PostParents {
+        replied, reposted, ..
+    }) = PostParents::get_from_graph(author_id, post_id).await?
     {
         for PostParent { key, .. } in [replied, reposted].into_iter().flatten() {
             PostCounts::invalidate(&[&key.owner_id, &key.resource_id]).await?;
@@ -651,6 +691,10 @@ pub async fn del(key: ResourceKey, ingestor: &UserIngestor) -> Result<(), EventP
         return Err(EventProcessorError::SkipIndexing);
     };
 
+    if uri.contains("/pub/social/v1/posts/") {
+        nexus_common::models::social_event::remove(&key.owner_id, &key.resource_id).await?;
+    }
+
     // Graph query to check if there is any edge at all to this post other than AUTHORED, is a reply or is a repost.
     let query = post_is_safe_to_delete(&key.owner_id, &key.resource_id);
 
@@ -660,10 +704,13 @@ pub async fn del(key: ResourceKey, ingestor: &UserIngestor) -> Result<(), EventP
     match execute_graph_operation(query).await? {
         OperationOutcome::CreatedOrDeleted => sync_del(key.owner_id, key.resource_id, uri).await?,
         OperationOutcome::Updated => {
-            let PostParents { replied, reposted } =
-                PostParents::get_from_graph(&key.owner_id, &key.resource_id)
-                    .await?
-                    .unwrap_or_default();
+            let PostParents {
+                replied,
+                reposted,
+                app_replied,
+            } = PostParents::get_from_graph(&key.owner_id, &key.resource_id)
+                .await?
+                .unwrap_or_default();
             let reference = |PostParent { uri, key }| Reference {
                 uri,
                 target: ReferenceTarget::Post(key),
@@ -674,7 +721,9 @@ pub async fn del(key: ResourceKey, ingestor: &UserIngestor) -> Result<(), EventP
             let tombstone = PostInput {
                 uri,
                 content: String::new(),
-                parent: replied.map(reference),
+                parent: replied.map(reference).or_else(|| {
+                    app_replied.map(|uri| crate::events::route::resolve_reference(&uri))
+                }),
                 embed: reposted.map(reference),
                 collection_items: Vec::new(),
                 kind: PostKind::Short,
@@ -718,24 +767,27 @@ pub async fn sync_del(
 
     // Recover the kind BEFORE removing the gate below. PostDetails is still present
     // (graph-delete runs last). Doing this after the gate deletion would let a
-    // failed lookup strand the decrements on retry (gate gone, post_in_index false).
+    // failed lookup strand the notifications on retry (gate gone, post_in_index false).
     let deleted_kind = if post_in_index {
         post_kind(&author_id, &post_id).await?
     } else {
         PubkyAppPostKind::Unknown
     };
-    let is_collection = deleted_kind == PubkyAppPostKind::Collection;
 
     // The parents to clean up come from the graph, which still has the post because
     // the graph delete runs LAST. Read them before removing the gate, for the same
     // reason as the kind above.
-    let PostParents { replied, reposted } = PostParents::get_from_graph(&author_id, &post_id)
+    let PostParents {
+        replied,
+        reposted,
+        app_replied,
+    } = PostParents::get_from_graph(&author_id, &post_id)
         .await?
         .unwrap_or_default();
 
     // 2. Atomically commit the cleanup decision: remove the gate as the very
     //    first mutation. Subsequent retries will observe `post_in_index = false`
-    //    and skip non-idempotent ops (counters, scores, notifications).
+    //    and skip non-idempotent ops (scores, notifications).
     if post_in_index {
         PostRelationships::delete(&author_id, &post_id).await?;
     }
@@ -743,34 +795,13 @@ pub async fn sync_del(
     // If the post is a reply, cannot delete from the main feeds
     // In the main feed, we just include the root posts and reposts
     // It could be a situation that relationship would not exist and we will treat the post as a not reply
-    let is_reply = replied.is_some();
+    let is_reply = replied.is_some() || app_replied.is_some();
 
-    // DELETE TO INDEX - PHASE 1, decrease post counts
-    let indexing_results = nexus_common::traced_join!(
-        tracing::info_span!("index.delete", phase = "post_counts");
-        // Idempotent: JSON DEL + ZREM from engagement sorted set.
-        PostCounts::delete(&author_id, &post_id, !is_reply),
-        // Guarded: skip on retry to avoid double-decrement.
-        async {
-            if post_in_index {
-                UserCounts::decrement(&author_id, "posts", None).await?;
-            }
-            Ok::<(), EventProcessorError>(())
-        },
-        async {
-            // reply XOR collection; never both fire.
-            if post_in_index && is_reply {
-                UserCounts::decrement(&author_id, "replies", None).await?;
-            } else if is_collection {
-                UserCounts::decrement(&author_id, "collections", None).await?;
-            };
-            Ok::<(), EventProcessorError>(())
-        }
-    );
-
-    indexing_results.0?;
-    indexing_results.1?;
-    indexing_results.2?;
+    // DELETE TO INDEX - PHASE 1, remove the post counts
+    // Idempotent: JSON DEL + ZREM from engagement sorted set.
+    PostCounts::delete(&author_id, &post_id, !is_reply)
+        .instrument(tracing::info_span!("index.delete", phase = "post_counts"))
+        .await?;
 
     // Use that index wrapper to delete a post reply
     let mut reply_parent_post_key_wrapper: Option<(String, String)> = None;
@@ -986,7 +1017,11 @@ mod tests {
     }
 
     fn parents(replied: Option<PostParent>, reposted: Option<PostParent>) -> PostParents {
-        PostParents { replied, reposted }
+        PostParents {
+            replied,
+            reposted,
+            app_replied: None,
+        }
     }
 
     #[test]

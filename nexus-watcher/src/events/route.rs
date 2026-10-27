@@ -8,6 +8,7 @@
 //! inside objects.
 
 use super::inputs::{Reference, ReferenceTarget, ResourceKey};
+use nexus_common::models::app_post::AppPostUri;
 use pubky_social_specs::legacy_v0::{self, try_parse_pubky_path, ExtendedParsedUri};
 use pubky_social_specs::{
     epoch_segment, ParsedUri, PubkyId, Resource, Visibility, SOCIAL_NAMESPACE,
@@ -16,6 +17,8 @@ use pubky_social_specs::{
 /// A pubky address classified by its namespace segment and parsed by that epoch's parser.
 #[derive(Debug)]
 pub enum Routed {
+    /// An app-owned v1 post, parsed with the shared v1 storage layout.
+    AppPost(AppPostUri),
     /// A `pubky.app` path or another app's universal tag, parsed by the frozen v0 reader.
     Legacy(ExtendedParsedUri),
     /// A `/pub/social/v1/…` path parsed by the v1 parser, an unknown v1 resource included.
@@ -35,6 +38,14 @@ pub fn route(uri: &str) -> Routed {
     };
     if path.app == SOCIAL_NAMESPACE {
         return route_social(uri, path.segments.first().map(String::as_str));
+    }
+    if path.app != "pubky.app" && path.segments.first().is_some_and(|epoch| epoch == "v1") {
+        return AppPostUri::parse(uri).map_or_else(
+            || Routed::Malformed {
+                reason: "Invalid app v1 post path".into(),
+            },
+            Routed::AppPost,
+        );
     }
     match ExtendedParsedUri::try_from(uri) {
         Ok(parsed) => Routed::Legacy(parsed),
@@ -73,6 +84,7 @@ fn route_social(uri: &str, epoch: Option<&str>) -> Routed {
 pub fn resolve_reference(address: &str) -> Reference {
     let target = match route(address) {
         Routed::Legacy(parsed) => legacy_target(parsed),
+        Routed::AppPost(parsed) => ReferenceTarget::AppPost(parsed),
         Routed::Social(parsed) => social_target(parsed),
         Routed::Malformed { .. } => {
             bare_user(address).map_or(ReferenceTarget::Other, ReferenceTarget::User)
@@ -113,7 +125,9 @@ pub fn takedown_address(target: &ReferenceTarget) -> Result<String, String> {
             resource: legacy_v0::Resource::Tag(key.resource_id.clone()),
         },
         ReferenceTarget::User(_) => return Err("a user is never taken down".to_string()),
-        ReferenceTarget::Other => return Err("names nothing Nexus takes down".to_string()),
+        ReferenceTarget::Other | ReferenceTarget::AppPost(_) => {
+            return Err("names nothing Nexus takes down".to_string())
+        }
     };
     parsed.try_to_uri_str()
 }

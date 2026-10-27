@@ -1,3 +1,6 @@
+mod post_reference;
+pub mod resource_changes;
+
 use crate::db::{kv::RedisResult, RedisOps};
 use serde::{Deserialize, Serialize};
 use tracing::error;

@@ -3,8 +3,8 @@
 //! [`TranslatedPut`] and [`TranslatedDel`] are the operations every epoch maps into.
 //! [`translate_put`] and [`translate_del`] dispatch an event to the translator of its target's
 //! epoch, which gets its own parsed target and never sees the [`EventTarget`]. Skips are not
-//! translated: the classifier takes them before the fetch, and still skips every `social/v1`
-//! event, so the v1 translator runs only in its unit tests.
+//! translated: the classifier takes them before the fetch. Public v1 profiles, stored post versions,
+//! follows and tags pass through to their handlers.
 
 pub(super) mod legacy_v0;
 pub(super) mod social_v1;
@@ -14,6 +14,7 @@ use crate::events::inputs::{
     BookmarkInput, FileInput, PostInput, ResourceKey, TagInput, UserInput,
 };
 use crate::events::target::EventTarget;
+use nexus_common::models::app_post::{AppPostInput, AppPostUri};
 use pubky_social_specs::PubkyId;
 
 /// A fetched object with the ids its path carries, one variant per PUT handler.
@@ -22,6 +23,10 @@ use pubky_social_specs::PubkyId;
 /// and every input but the bookmark's carries the address its object is stored under.
 #[derive(Debug)]
 pub enum TranslatedPut {
+    AppPost {
+        path: AppPostUri,
+        post: AppPostInput,
+    },
     User {
         user_id: PubkyId,
         user: UserInput,
@@ -34,7 +39,7 @@ pub enum TranslatedPut {
         user_id: PubkyId,
         followee_id: PubkyId,
     },
-    /// `app` is set only for another app's universal tag (`/pub/mapky/tags/…`).
+    /// Resource-tag scope: social for v1; the legacy app name for v0 universal tags.
     Tag {
         key: ResourceKey,
         tag: TagInput,
@@ -53,6 +58,7 @@ pub enum TranslatedPut {
 /// A deletion with the ids its path carries, one variant per DEL handler.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TranslatedDel {
+    AppPost(AppPostUri),
     User {
         user_id: PubkyId,
     },
@@ -61,7 +67,7 @@ pub enum TranslatedDel {
         user_id: PubkyId,
         followee_id: PubkyId,
     },
-    /// `app` is set only for another app's universal tag (`/pub/mapky/tags/…`).
+    /// Resource-tag scope: social for v1; the legacy app name for v0 universal tags.
     Tag {
         key: ResourceKey,
         app: Option<String>,
@@ -81,6 +87,12 @@ pub(super) fn translate_put(
     bytes: &[u8],
 ) -> Result<TranslatedPut, EventProcessorError> {
     match target {
+        EventTarget::AppPost(path) => Ok(TranslatedPut::AppPost {
+            path: path.clone(),
+            post: path
+                .read(bytes)
+                .map_err(EventProcessorError::SpecValidation)?,
+        }),
         EventTarget::Legacy(parsed) => legacy_v0::translate_put(event_uri, parsed, bytes),
         EventTarget::Social(parsed) => social_v1::translate_put(event_uri, parsed, bytes),
     }
@@ -92,6 +104,7 @@ pub(super) fn translate_put(
 /// [`translate_put`].
 pub(super) fn translate_del(target: &EventTarget) -> Result<TranslatedDel, EventProcessorError> {
     match target {
+        EventTarget::AppPost(path) => Ok(TranslatedDel::AppPost(path.clone())),
         EventTarget::Legacy(parsed) => legacy_v0::translate_del(parsed),
         EventTarget::Social(parsed) => social_v1::translate_del(parsed),
     }

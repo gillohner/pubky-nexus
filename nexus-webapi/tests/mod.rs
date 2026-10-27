@@ -8,7 +8,12 @@ pub mod files;
 pub mod post;
 pub mod rate_limit;
 pub mod resource;
+pub mod resource_changes;
 pub mod stream;
 pub mod tags;
 pub mod user;
 pub mod utils;
+
+mod app_kinds;
+mod post_references;
+mod social_events;

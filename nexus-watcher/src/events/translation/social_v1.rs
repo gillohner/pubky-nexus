@@ -13,10 +13,11 @@ use crate::events::inputs::{
 };
 use crate::events::route::resolve_reference;
 use crate::events::translation::{TranslatedDel, TranslatedPut};
+use nexus_common::models::app_post::{AppPostInput, AppPostUri};
 use pubky_social_specs::{
     epoch_segment, post_uri_builder, ParsedUri, PubkyId, PubkySocialCollectionContent,
     PubkySocialObject, PubkySocialPost, PubkySocialPostKind, PubkySocialTag, PubkySocialUser,
-    PubkySocialUserLink, Resource, ValidationCtx,
+    PubkySocialUserLink, Resource, ValidationCtx, Visibility,
 };
 
 /// Reads `bytes` with the v1 reader for the resource `parsed` names, under the root of the
@@ -36,6 +37,27 @@ pub fn translate_put(
 ) -> Result<TranslatedPut, EventProcessorError> {
     if !has_handler(&parsed.resource) {
         return Err(no_handler(&parsed.resource));
+    }
+    if let (Resource::Post { id, .. }, Visibility::Public) = (&parsed.resource, &parsed.visibility)
+    {
+        let path = AppPostUri::parse_social(event_uri).ok_or_else(|| {
+            EventProcessorError::SpecValidation("Invalid social post path".into())
+        })?;
+        let envelope = path
+            .read(bytes)
+            .map_err(EventProcessorError::SpecValidation)?;
+        let kind: PubkySocialPostKind =
+            serde_json::from_value(serde_json::Value::String(envelope.kind.0.clone()))
+                .map_err(|e| EventProcessorError::SpecValidation(e.to_string()))?;
+        if matches!(kind, PubkySocialPostKind::Unknown(_)) {
+            // Unknown social tokens retain the Unknown storage kind until the
+            // pinned reader knows their content semantics.
+            return Ok(TranslatedPut::Post {
+                key: owned_key(parsed.user_id.clone(), id),
+                post: PostInput::from_open_v1(envelope, &parsed.user_id, id),
+            });
+        }
+        // Known kinds still use their pinned semantic validation (e.g. collections).
     }
     let ctx = ValidationCtx {
         root: parsed.visibility.root(),
@@ -62,11 +84,11 @@ pub fn translate_put(
             user_id,
             followee_id: followee_id.clone(),
         },
-        // TODO(specs-migration): the tag flow PR decides which `app` a v1 tag carries.
+        // The existing Resource-tag writer scopes v1 tags to the social namespace.
         (Resource::Tag(tag_id), PubkySocialObject::Tag(tag)) => TranslatedPut::Tag {
             tag: TagInput::from_v1(tag, uri),
             key: owned_key(user_id, tag_id),
-            app: None,
+            app: Some("social".into()),
         },
         (resource, object) => return Err(unexpected_object(resource, &object)),
     })
@@ -91,10 +113,10 @@ pub fn translate_del(parsed: &ParsedUri) -> Result<TranslatedDel, EventProcessor
             user_id,
             followee_id: followee_id.clone(),
         },
-        // TODO(specs-migration): the tag flow PR decides which `app` a v1 tag carries.
+        // The existing Resource-tag writer scopes v1 tags to the social namespace.
         Resource::Tag(tag_id) => TranslatedDel::Tag {
             key: owned_key(user_id, tag_id),
-            app: None,
+            app: Some("social".into()),
         },
         resource => return Err(no_handler(resource)),
     })
@@ -173,6 +195,22 @@ impl From<PubkySocialUserLink> for UserLink {
 }
 
 impl PostInput {
+    fn from_open_v1(post: AppPostInput, author: &PubkyId, post_id: &str) -> Self {
+        Self {
+            uri: post_uri_builder(author.to_string(), post_id.to_string()),
+            collection_items: Vec::new(),
+            parent: post.parent.as_deref().map(resolve_reference),
+            embed: post.embed.as_deref().map(resolve_reference),
+            content: post.content,
+            kind: PostKind::Unknown,
+            attachments: post
+                .attachments
+                .into_iter()
+                .map(|attachment| attachment.uri)
+                .collect(),
+            lock: post.lock,
+        }
+    }
     /// The input for a version of `author`'s post `post_id`, stored under the versionless post
     /// address whatever version the event named, with its parent, embed and collection items
     /// resolved; the attachments as their addresses, `alt` and `name` dropped.
@@ -190,23 +228,6 @@ impl PostInput {
                 .map(|attachment| attachment.uri)
                 .collect(),
             lock: post.lock,
-        }
-    }
-}
-
-impl From<PubkySocialPostKind> for PostKind {
-    fn from(kind: PubkySocialPostKind) -> Self {
-        match kind {
-            PubkySocialPostKind::Note => Self::Short,
-            PubkySocialPostKind::Article => Self::Long,
-            PubkySocialPostKind::Image => Self::Image,
-            PubkySocialPostKind::Video => Self::Video,
-            PubkySocialPostKind::Link => Self::Link,
-            PubkySocialPostKind::File => Self::File,
-            PubkySocialPostKind::Collection => Self::Collection,
-            // The reader keeps an unrecognised kind's spelling; Nexus drops it. A kind the
-            // non-exhaustive enum adds later lands here until a pin bump maps it.
-            _ => Self::Unknown,
         }
     }
 }
@@ -250,8 +271,7 @@ mod tests {
     use crate::events::translation::legacy_v0;
     use pubky_social_specs::legacy_v0::{
         follow_uri_builder as v0_follow_uri_builder, post_uri_builder as v0_post_uri_builder,
-        tag_uri_builder as v0_tag_uri_builder, user_uri_builder as v0_user_uri_builder,
-        ExtendedParsedUri, PubkyAppPostKind,
+        user_uri_builder as v0_user_uri_builder, ExtendedParsedUri, PubkyAppPostKind,
     };
     use pubky_social_specs::traits::HashId;
     use pubky_social_specs::{
@@ -596,19 +616,8 @@ mod tests {
 
     #[test]
     fn post_with_an_unrecognised_kind_carries_the_unknown_kind() {
-        // The reader reads the kind as unknown and then rejects the post, so read it directly.
         let bytes = br#"{"content": "hello", "kind": "hyperverse_post", "attachments": []}"#;
-        let put = put_at(&version_uri(None), bytes);
-        assert!(
-            matches!(put, Err(EventProcessorError::SpecValidation(_))),
-            "{put:?}"
-        );
-        let post: PubkySocialPost = serde_json::from_slice(bytes).unwrap();
-        assert_eq!(
-            post.kind,
-            PubkySocialPostKind::Unknown("hyperverse_post".to_string())
-        );
-        let input = PostInput::from_v1(post, &pubky_id(USER), POST_ID);
+        let (_, input) = translate_post(bytes);
         assert_eq!(input.kind, PostKind::Unknown);
         assert_eq!(
             input.into_details(&key(POST_ID)).kind,
@@ -843,9 +852,9 @@ mod tests {
     // ---- tag ----------------------------------------------------------------------------
 
     /// A tag on a post, in either epoch's address, keys the tag by its id and the post by its
-    /// node, with no app.
+    /// node, in the social Resource-tag scope.
     #[test]
-    fn put_tag_on_a_post_translates_to_its_input_without_an_app() {
+    fn put_tag_on_a_post_translates_to_the_social_resource_scope() {
         for address in [v0_post_uri(), v1_post_uri()] {
             let tag = PubkySocialTag::new(address.clone(), "nexus".to_string());
             let id = tag.create_id();
@@ -860,7 +869,7 @@ mod tests {
                 },
                 "{address}"
             );
-            assert_eq!(app, None, "{address}");
+            assert_eq!(app.as_deref(), Some("social"), "{address}");
         }
     }
 
@@ -967,7 +976,7 @@ mod tests {
                 tag_uri_builder(USER.into(), HASH_ID.into()),
                 TranslatedDel::Tag {
                     key: key(HASH_ID),
-                    app: None,
+                    app: Some("social".into()),
                 },
             ),
         ];
@@ -986,7 +995,7 @@ mod tests {
         }
     }
 
-    /// A v1 DEL of a profile, a post, a follow or a tag is the operation the `pubky.app` DEL
+    /// A v1 DEL of a profile, a post or a follow is the operation the `pubky.app` DEL
     /// of that resource translates to, so both epochs reach one handler with one key.
     #[test]
     fn del_translates_to_the_same_operation_as_the_pubky_app_del() {
@@ -1002,10 +1011,6 @@ mod tests {
             (
                 follow_uri_builder(USER.into(), OTHER_USER.into()),
                 v0_follow_uri_builder(USER.into(), OTHER_USER.into()),
-            ),
-            (
-                tag_uri_builder(USER.into(), HASH_ID.into()),
-                v0_tag_uri_builder(USER.into(), HASH_ID.into()),
             ),
         ];
         for (v1, v0) in cases {

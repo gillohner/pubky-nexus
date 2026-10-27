@@ -72,6 +72,17 @@ pub async fn search_posts_by_tag_handler(
 
     let pagination = query.pagination.to_pagination(query.start, query.end);
 
+    if sorting == Some(StreamSorting::Rating) && query.user_id.is_none() {
+        let entries = nexus_common::models::post::PostStream::get_scored_post_keys(
+            nexus_common::models::post::StreamSource::All,
+            pagination,
+            nexus_common::db::kv::SortOrder::Descending,
+            StreamSorting::Rating,
+            Some(vec![tag.to_string()]),
+        )
+        .await?;
+        return Ok(Json(entries.into_iter().map(Into::into).collect()));
+    }
     if let (Some(user_id), Some(reach)) = (query.user_id, query.reach) {
         let posts =
             PostsByTagSearch::get_by_label_with_reach(&tag, sorting, &user_id, reach, pagination)

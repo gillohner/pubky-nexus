@@ -1,9 +1,9 @@
 use crate::errors::EventProcessorError;
+use nexus_common::models::post::PostKind as PubkyAppPostKind;
 use nexus_common::models::{
     error::{ModelError, ModelResult},
     post::{PostDetails, PostRelationships},
 };
-use pubky_social_specs::legacy_v0::PubkyAppPostKind;
 
 /// Classifies the outcome of a best-effort user ingestion attempted while
 /// handling an [`OperationOutcome::MissingDependency`](nexus_common::db::OperationOutcome::MissingDependency).
@@ -59,15 +59,6 @@ pub async fn post_kind(
         .await?
         .map(|details| details.kind)
         .unwrap_or(PubkyAppPostKind::Unknown))
-}
-
-/// Whether a post is a Collection. A missing/unknown target defaults to `false`
-/// (a normal post) so the increment and decrement paths stay symmetric.
-pub async fn post_is_collection(
-    author_id: &str,
-    post_id: &str,
-) -> Result<bool, EventProcessorError> {
-    Ok(post_kind(author_id, post_id).await? == PubkyAppPostKind::Collection)
 }
 
 #[cfg(test)]
