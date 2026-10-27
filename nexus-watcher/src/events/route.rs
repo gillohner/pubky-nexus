@@ -8,6 +8,7 @@
 //! inside objects.
 
 use super::inputs::{Reference, ReferenceTarget, ResourceKey};
+use nexus_common::models::app_post::AppPostUri;
 use pubky_social_specs::legacy_v0::traits::{HasIdPath, HasPath};
 use pubky_social_specs::legacy_v0::{
     self, try_parse_pubky_path, ExtendedParsedUri, PubkyAppBlob, PubkyAppBookmark, PubkyAppFeed,
@@ -28,15 +29,20 @@ const TAGS_SEGMENT: &str = "tags";
 /// A pubky address classified by its namespace segment and parsed by that epoch's parser.
 #[derive(Debug)]
 pub enum Routed {
+    AppPost(AppPostUri),
     /// A `pubky.app` path or another app's universal tag, parsed by the frozen v0 reader.
     Legacy(ExtendedParsedUri),
     /// A `/pub/social/v1/…` path parsed by the v1 parser, an unknown v1 resource included.
     Social(ParsedUri),
     /// A `/pub/social/vN/…` path of an epoch the pinned crate does not speak.
-    UnsupportedEpoch { version: String },
+    UnsupportedEpoch {
+        version: String,
+    },
     /// No namespace, a `social` path without an epoch segment, or a path its own namespace's
     /// parser rejects.
-    Malformed { reason: String },
+    Malformed {
+        reason: String,
+    },
 }
 
 /// Routes `uri` by its namespace segment, taken from the frozen reader's lenient splitter.
@@ -47,6 +53,9 @@ pub fn route(uri: &str) -> Routed {
     };
     if path.app == SOCIAL_NAMESPACE {
         return route_social(uri, path.segments.first().map(String::as_str));
+    }
+    if let Some(post) = AppPostUri::parse(uri) {
+        return Routed::AppPost(post);
     }
     match ExtendedParsedUri::try_from(uri) {
         Ok(parsed) => Routed::Legacy(parsed),
@@ -84,6 +93,8 @@ fn route_social(uri: &str, epoch: Option<&str>) -> Routed {
 /// [`ReferenceTarget::Foreign`] or [`ReferenceTarget::Other`], as those variants describe.
 pub fn resolve_reference(address: &str) -> Reference {
     let target = match route(address) {
+        // Another app's post version: a foreign object, as other apps' paths are.
+        Routed::AppPost(_) => ReferenceTarget::Foreign,
         Routed::Legacy(parsed) => legacy_target(parsed, address),
         Routed::Social(parsed) => social_target(parsed, address),
         Routed::Malformed { .. } => unparsed_target(address),
@@ -121,6 +132,8 @@ pub fn takedown_key(address: &str) -> Result<String, String> {
         )),
         Routed::Social(_) => Ok(address.to_string()),
         Routed::Legacy(parsed) => parsed.try_to_uri_str(),
+        // Another app's post resolves to a foreign object, which no takedown names.
+        Routed::AppPost(_) => Err("another app's post is not taken down".to_string()),
         Routed::UnsupportedEpoch { version } => Err(format!("unsupported epoch {version}")),
         Routed::Malformed { reason } => Err(reason),
     }

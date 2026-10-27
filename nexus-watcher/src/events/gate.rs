@@ -21,6 +21,10 @@ pub(super) enum Gate {
 /// The gate's decision for `event` of a user at `user_epoch`. Pure: the caller reads the
 /// user's epoch.
 fn decide(event: &Event, user_epoch: Epoch) -> Gate {
+    // App namespaces are independent of the social migration and never flip its epoch.
+    if matches!(event.target, EventTarget::AppPost(_)) {
+        return Gate::Handle;
+    }
     match (event.target.epoch(), user_epoch) {
         (Epoch::V0, Epoch::V0) | (Epoch::V1, Epoch::V1) => Gate::Handle,
         // A user at `v1` is no longer read through `pubky.app`, PUT or DEL.
@@ -90,6 +94,15 @@ mod tests {
             &format!("social/v1/follows/{USER}.json"),
             "social/v1/tags/8Z8CWH8NVYQY39ZEBFGKQWWEKG.json",
         ])
+    }
+
+    #[test]
+    fn app_post_versions_are_independent_of_the_social_epoch() {
+        for line in lines(&["example/v1/posts/0032SSN7Q4EVG/0032SSN7Q4EVJ.json"]) {
+            for epoch in [Epoch::V0, Epoch::V1] {
+                assert_eq!(decide(&event(&line), epoch), Gate::Handle, "{line}");
+            }
+        }
     }
 
     #[test]
