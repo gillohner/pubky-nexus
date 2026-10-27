@@ -7,3 +7,5 @@ mod posts;
 mod tags;
 pub(crate) mod users;
 pub(crate) mod utils;
+
+mod resource_references;
