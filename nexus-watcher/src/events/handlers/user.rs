@@ -9,7 +9,7 @@ use nexus_common::models::{
     user::{Epoch, UserDetails, UserSearch, UsersByTagSearch},
 };
 use pubky_social_specs::PubkyId;
-use tracing::{debug, Instrument};
+use tracing::{debug, warn, Instrument};
 
 use crate::events::inputs::UserInput;
 
@@ -49,7 +49,8 @@ pub async fn sync_put(user: UserInput, user_id: PubkyId) -> Result<(), EventProc
 /// What Nexus holds for the user at `pubky.app` is migrated first ([`crate::events::v0_to_v1`]). A
 /// failure before the epoch write leaves the user at `v0`, so the retry runs the whole flip
 /// again, migration included; one after it is retried as a profile edit, which caches the
-/// stored `v1`.
+/// stored `v1`. The resource changes feed lines of the tags the migration moved are published
+/// after the epoch write, and a failure to publish them does not fail the flip.
 #[tracing::instrument(name = "user.flip", skip_all, fields(user_id = %user_id))]
 pub async fn flip(user_id: &PubkyId) -> Result<(), EventProcessorError> {
     debug!("Flipping user to v1");
@@ -59,6 +60,12 @@ pub async fn flip(user_id: &PubkyId) -> Result<(), EventProcessorError> {
 
     // Step 2: Set the epoch in the graph
     Epoch::set_v1_in_graph(user_id).await?;
+
+    // Publish the resource changes feed lines of the tags the migration moved. Best effort:
+    // the feed never fails the flip, and the watcher's sweep publishes what is left
+    if let Err(e) = crate::events::v0_to_v1::resource_changes::publish_moves(user_id).await {
+        warn!(%user_id, error = %e, "Moved resource tags left for the sweep");
+    }
 
     // Step 3: Refresh the details cache from the graph, so the API shows `v1`
     let user_id: &str = user_id.as_ref();
