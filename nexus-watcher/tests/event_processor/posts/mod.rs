@@ -21,6 +21,7 @@ mod edit_kind_refreshes_notification_kind;
 mod edit_reply_parent_notification;
 mod edit_reposted_notification;
 mod edit_tagged_notification;
+mod embed_link;
 mod engagement;
 mod fail_reply;
 mod fail_repost;
