@@ -37,6 +37,10 @@ pub enum NexusCommands {
     #[command(subcommand)]
     Db(DbCommands),
 
+    /// Replay the `social/v1` events of users whose `social/v1` profile this index never
+    /// flipped on (they stay at `v0` and their `social/v1` writes are ignored)
+    RecoverV1(RecoverV1Args),
+
     /// Run the API, the Watcher and the scheduled Jobs (default when no arguments are given)
     #[command(hide = true)]
     Run,
@@ -56,6 +60,21 @@ pub struct JobRunArgs {
     /// Name of the job to run (see `jobs list`)
     #[arg(required = true)]
     pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct RecoverV1Args {
+    /// A user to recover (z32 public key); repeat for several
+    #[arg(long = "user")]
+    pub users: Vec<String>,
+
+    /// A file with one user public key per line (blank lines and `#` comments skipped)
+    #[arg(long)]
+    pub users_file: Option<PathBuf>,
+
+    /// The homeserver whose per-user streams are replayed; the configured one by default
+    #[arg(long)]
+    pub homeserver: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -138,6 +157,7 @@ mod tests {
             &["db", "migration", "run"],
             &["db", "migration", "check"],
             &["db", "migration", "new", "some-migration"],
+            &["recover-v1", "--user", "x"],
         ];
 
         for subcommand in cases {
@@ -159,6 +179,29 @@ mod tests {
                 cli.config_dir, dir,
                 "flag after {subcommand:?} should set config_dir"
             );
+        }
+    }
+
+    #[test]
+    fn recover_v1_takes_users_and_a_file() {
+        let cli = Cli::try_parse_from([
+            "nexusd",
+            "recover-v1",
+            "--user",
+            "a",
+            "--user",
+            "b",
+            "--users-file",
+            "users.txt",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Some(NexusCommands::RecoverV1(args)) => {
+                assert_eq!(args.users, ["a", "b"]);
+                assert_eq!(args.users_file, Some(PathBuf::from("users.txt")));
+                assert_eq!(args.homeserver, None);
+            }
+            other => panic!("unexpected command: {other:?}"),
         }
     }
 

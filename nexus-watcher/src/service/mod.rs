@@ -1,5 +1,6 @@
 mod constants;
 pub mod indexer;
+pub mod recover_v1;
 pub mod runner;
 pub mod stats;
 mod task_runner;

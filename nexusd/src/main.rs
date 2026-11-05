@@ -1,12 +1,16 @@
 use clap::Parser;
 use nexus_common::types::DynError;
 use nexus_common::{StackManager, TrustRankConfig};
+use nexus_watcher::NexusWatcherBuilder;
 use nexus_webapi::mock::MockDb;
-use nexusd::cli::{Cli, DbCommands, JobCommands, JobRunArgs, MigrationCommands, NexusCommands};
+use nexusd::cli::{
+    Cli, DbCommands, JobCommands, JobRunArgs, MigrationCommands, NexusCommands, RecoverV1Args,
+};
 use nexusd::config::DaemonConfig;
 use nexusd::jobs::JobRegistry;
 use nexusd::migrations::{import_migrations, MigrationBuilder, MigrationManager};
 use nexusd::DaemonLauncher;
+use pubky_social_specs::PubkyId;
 
 #[tokio::main]
 async fn main() -> Result<(), DynError> {
@@ -58,6 +62,7 @@ async fn main() -> Result<(), DynError> {
                 }
             },
         },
+        Some(NexusCommands::RecoverV1(args)) => recover_v1(config_dir, args).await?,
         Some(NexusCommands::Api) => {
             DaemonLauncher::start_api(config_dir, None).await?;
         }
@@ -83,5 +88,50 @@ async fn main() -> Result<(), DynError> {
         }
     }
 
+    Ok(())
+}
+
+/// `nexusd recover-v1`: prints one line per user, `<user> <outcome>`, and fails when any user
+/// could not be recovered.
+async fn recover_v1(config_dir: std::path::PathBuf, args: RecoverV1Args) -> Result<(), DynError> {
+    let mut ids = args.users;
+    if let Some(path) = &args.users_file {
+        let text = tokio::fs::read_to_string(path).await?;
+        ids.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_string),
+        );
+    }
+    let users = ids
+        .iter()
+        .map(|id| PubkyId::try_from(id.as_str()).map_err(|e| format!("{id}: {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let homeserver = args
+        .homeserver
+        .map(|id| PubkyId::try_from(id.as_str()).map_err(|e| format!("{id}: {e}")))
+        .transpose()?;
+    let config = DaemonConfig::read_or_create_config_file(config_dir).await?;
+    let outcomes = NexusWatcherBuilder(config.watcher_config())
+        .recover_v1(homeserver, &users)
+        .await?;
+    let mut failed = 0;
+    for (user, outcome) in &outcomes {
+        match outcome {
+            Ok(recovery) => println!("{user} {recovery:?}"),
+            Err(error) => {
+                failed += 1;
+                println!("{user} error: {error}");
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(format!(
+            "{failed} of {} users could not be recovered",
+            outcomes.len()
+        )
+        .into());
+    }
     Ok(())
 }

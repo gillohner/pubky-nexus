@@ -1,4 +1,8 @@
+use crate::events::DefaultEventHandler;
+use crate::homeserver::{HomeserverClient, PubkyHomeserverClient};
+use crate::service::recover_v1::{recover_v1_users, Recovery};
 use crate::service::NexusWatcher;
+use crate::EventProcessorError;
 use nexus_common::db::{DatabaseConfig, PubkyConnector};
 use nexus_common::types::DynError;
 use nexus_common::utils::create_shutdown_rx;
@@ -6,6 +10,7 @@ use nexus_common::WatcherConfig;
 use nexus_common::{Level, StackManager};
 use pubky_social_specs::PubkyId;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::watch::Receiver;
 
 #[derive(Debug, Default)]
@@ -69,5 +74,29 @@ impl NexusWatcherBuilder {
         .await?;
 
         NexusWatcher::start(shutdown_rx, self.0).await
+    }
+
+    /// Replays the `social/v1` events of `users` on `homeserver` (the configured primary
+    /// homeserver when `None`) through the watcher's event handler, once, for users whose
+    /// `social/v1` profile this index never flipped on: see [`crate::service::recover_v1`].
+    /// Safe to run beside a running watcher, like its retry processor.
+    pub async fn recover_v1(
+        self,
+        homeserver: Option<PubkyId>,
+        users: &[PubkyId],
+    ) -> Result<Vec<(PubkyId, Result<Recovery, EventProcessorError>)>, DynError> {
+        StackManager::setup(&self.0.stack).await?;
+        PubkyConnector::initialise(
+            self.0.stack.net.pubky_client_testnet_host(),
+            self.0.stack.net.pubky_client_http_request_timeout(),
+        )
+        .await?;
+        let client: Arc<dyn HomeserverClient> = Arc::new(PubkyHomeserverClient::from_config(
+            PubkyConnector::get()?,
+            &self.0,
+        ));
+        let handler = DefaultEventHandler::from_config(&self.0, client.clone());
+        let homeserver = homeserver.unwrap_or_else(|| self.0.homeserver.clone());
+        Ok(recover_v1_users(&handler, client.as_ref(), &homeserver, users).await)
     }
 }
