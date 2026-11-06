@@ -132,9 +132,13 @@ pub async fn stream_resources_handler(
         return Ok(Json(vec![]));
     }
 
-    let stream =
-        ResourceStream::from_listed_resource_ids(query.viewer_id.as_deref(), &keys.resource_ids)
-            .await?;
+    let stream = ResourceStream::from_listed_resource_ids(
+        query.viewer_id.as_deref(),
+        &keys.resource_ids,
+        Some(5),
+        Some(3),
+    )
+    .await?;
 
     Ok(Json(stream.map(|s| s.0).unwrap_or_default()))
 }
@@ -182,11 +186,22 @@ impl ResourceStreamByIdsRequest {
     }
 }
 
+/// Tag limits of each view, as on `/v0/resource/{resource_id}/tags`.
+#[derive(Deserialize, Debug, Default)]
+pub struct ResourceStreamByIdsQuery {
+    pub limit_tags: Option<BoundedLimit<5, 100>>,
+    pub limit_taggers: Option<BoundedLimit<5, 100>>,
+}
+
 #[utoipa::path(
     post,
     path = STREAM_RESOURCES_BY_IDS_ROUTE,
     tag = "Stream",
     description = "Load 1–100 resources by resource_ids or uris (exactly one list). URIs are normalized and hashed as /v0/resource/by-uri does. Results follow request order, including duplicates; unknown resources are skipped. Each view carries details.id. viewer_id enables viewer-specific tag relationships. No resource is fetched or created by this lookup.",
+    params(
+        ("limit_tags" = Option<BoundedLimit<5, 100>>, Query, description = "Upper limit on the number of tags per resource (1–100, **default** 5)"),
+        ("limit_taggers" = Option<BoundedLimit<5, 100>>, Query, description = "Upper limit on the number of taggers per tag (1–100, **default** 5)"),
+    ),
     request_body = ResourceStreamByIdsRequest,
     responses(
         (status = 200, description = "Resource views in request order; an empty array when nothing matches", body = ResourceStream),
@@ -196,12 +211,18 @@ impl ResourceStreamByIdsRequest {
     )
 )]
 pub async fn stream_resources_by_ids_handler(
+    Query(query): Query<ResourceStreamByIdsQuery>,
     RequestJson(request): RequestJson<ResourceStreamByIdsRequest>,
 ) -> Result<Json<ResourceStream>> {
     let (ids, viewer_id) = request.into_ids()?;
-    let stream = ResourceStream::from_listed_resource_ids(viewer_id.as_deref(), &ids)
-        .await?
-        .unwrap_or_default();
+    let stream = ResourceStream::from_listed_resource_ids(
+        viewer_id.as_deref(),
+        &ids,
+        query.limit_tags.as_ref().map(|l| l.value()),
+        query.limit_taggers.as_ref().map(|l| l.value()),
+    )
+    .await?
+    .unwrap_or_default();
     Ok(Json(stream))
 }
 

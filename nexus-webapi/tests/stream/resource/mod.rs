@@ -320,3 +320,39 @@ async fn test_batch_resources_bad_requests_and_no_matches() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio_shared_rt::test(shared)]
+async fn test_batch_resources_tag_limits() -> Result<()> {
+    use crate::utils::{invalid_post_request, post_request};
+    use serde_json::json;
+    let body = || json!({"resource_ids": [ARTICLE]});
+    // ARTICLE: bitcoin (2 taggers), interesting (1)
+    let full = post_request(&format!("{ROOT_PATH}/by_ids"), body()).await?;
+    let bitcoin = full[0]["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tag| tag["label"] == "bitcoin")
+        .expect("bitcoin tag");
+    assert!(bitcoin["taggers"].as_array().unwrap().len() >= 2);
+
+    let cut = post_request(
+        &format!("{ROOT_PATH}/by_ids?limit_tags=1&limit_taggers=1"),
+        body(),
+    )
+    .await?;
+    let tags = cut[0]["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0]["taggers"].as_array().unwrap().len(), 1);
+    assert!(tags[0]["taggers_count"].as_u64().unwrap() >= 1);
+
+    for query in ["limit_tags=0", "limit_taggers=0", "limit_tags=abc"] {
+        invalid_post_request(
+            &format!("{ROOT_PATH}/by_ids?{query}"),
+            body(),
+            StatusCode::BAD_REQUEST,
+        )
+        .await?;
+    }
+    Ok(())
+}

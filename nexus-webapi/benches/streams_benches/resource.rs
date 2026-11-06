@@ -76,7 +76,7 @@ pub fn bench_stream_resources_by_ids(c: &mut Criterion) {
     .collect();
     c.bench_function("stream_resources_by_ids_100", |b| {
         b.to_async(&rt).iter(|| async {
-            let stream = ResourceStream::from_listed_resource_ids(None, &ids)
+            let stream = ResourceStream::from_listed_resource_ids(None, &ids, Some(5), Some(3))
                 .await
                 .unwrap()
                 .expect("seed resource fixtures before benchmarking");

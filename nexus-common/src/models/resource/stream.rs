@@ -97,11 +97,14 @@ impl ResourceStream {
     // -----------------------------------------------------------------------
 
     /// Loads full ResourceView objects from a list of resource IDs, one graph
-    /// read per resource.
+    /// read per resource. `limit_tags`/`limit_taggers` default as in
+    /// [`ResourceView::get_by_id`].
     // TODO Batch the page into one query
     pub async fn from_listed_resource_ids(
         viewer_id: Option<&str>,
         resource_ids: &[String],
+        limit_tags: Option<usize>,
+        limit_taggers: Option<usize>,
     ) -> ModelResult<Option<Self>> {
         if resource_ids.is_empty() {
             return Ok(None);
@@ -117,8 +120,8 @@ impl ResourceStream {
                     ResourceView::get_by_id(
                         &resource_id,
                         None,
-                        Some(5),
-                        Some(3),
+                        limit_tags,
+                        limit_taggers,
                         viewer_id.as_deref(),
                     )
                     .await
