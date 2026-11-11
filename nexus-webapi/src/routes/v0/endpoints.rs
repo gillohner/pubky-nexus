@@ -17,6 +17,7 @@ pub const USER_TAGGERS_ROUTE: &str = concatcp!(USER_ROUTE, "/taggers/{label}");
 pub const USER_FOLLOWERS_ROUTE: &str = concatcp!(USER_ROUTE, "/followers");
 pub const USER_FOLLOWING_ROUTE: &str = concatcp!(USER_ROUTE, "/following");
 pub const USER_FRIENDS_ROUTE: &str = concatcp!(USER_ROUTE, "/friends");
+pub const USER_REACH_SET_ROUTE: &str = concatcp!(USER_ROUTE, "/reach-set");
 
 // -- POST endpoints --
 pub const POST_PREFIX: &str = concatcp!(VERSION_ROUTE, "/post");
